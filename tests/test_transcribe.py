@@ -294,7 +294,7 @@ def test_mid_season_resume_preserves_completed_episode_and_saved_settings(
     """After E02 fails, resume processes E02/E03 and keeps E01 plus its original settings."""
     model.fail_on_call = 2
     with pytest.raises(RuntimeError, match="decoding failure"):
-        resume_job(ingested_job.job_id)
+        resume_job(ingested_job.job_id, stage="transcribe")
     failed = get_status(ingested_job.job_id)
     assert failed.stages.transcribe.status == "failed"
     assert failed.stages.transcribe.completed == ["E01"]
@@ -312,7 +312,7 @@ def test_mid_season_resume_preserves_completed_episode_and_saved_settings(
     monkeypatch.setenv("WHISPER_MODEL", "medium")
     monkeypatch.setenv("WHISPER_DEVICE", "cuda")
     model.fail_on_call = None
-    resumed = resume_job(failed.job_id)
+    resumed = resume_job(failed.job_id, stage="transcribe")
     assert resumed.stages.transcribe.status == "done"
     assert resumed.stages.transcribe.completed == ["E01", "E02", "E03"]
     assert resumed.stages.transcribe.pending == []
@@ -329,7 +329,7 @@ def test_unfinished_stage_repairs_missing_completed_artifact(
     ingested_job: JobState, model: _Model, extraction_calls: list[str], artifact: str
 ) -> None:
     """A checkpoint alone cannot cause a missing or corrupt artifact to be silently skipped."""
-    completed = resume_job(ingested_job.job_id)
+    completed = resume_job(ingested_job.job_id, stage="transcribe")
     directory = Path("data/jobs") / completed.job_id
     completed.stages.transcribe.status = "in_progress"
     write_json(directory / "state.json", completed)
@@ -347,7 +347,7 @@ def test_unfinished_stage_repairs_missing_completed_artifact(
     else:
         path.unlink()
     extraction_calls.clear()
-    assert resume_job(completed.job_id).stages.transcribe.status == "done"
+    assert resume_job(completed.job_id, stage="transcribe").stages.transcribe.status == "done"
     assert extraction_calls == ["E01"]
     assert path.exists()
 
@@ -368,7 +368,7 @@ def test_failed_sidecar_write_does_not_mark_episode_complete(
 
     monkeypatch.setattr(transcribe, "write_json", fail_rms)
     with pytest.raises(OSError, match="disk error"):
-        resume_job(ingested_job.job_id)
+        resume_job(ingested_job.job_id, stage="transcribe")
     state = get_status(ingested_job.job_id)
     assert state.stages.transcribe.completed == []
     assert state.stages.transcribe.pending == ["E01", "E02", "E03"]
@@ -379,24 +379,24 @@ def test_completed_transcription_resume_skips_model_and_audio_work(
     ingested_job: JobState, model: _Model, extraction_calls: list[str]
 ) -> None:
     """Repeated resume of a completed transcription stage is idempotent."""
-    completed = resume_job(ingested_job.job_id)
+    completed = resume_job(ingested_job.job_id, stage="transcribe")
     extraction_calls.clear()
     previous_calls = len(model.calls)
-    assert resume_job(completed.job_id) == completed
+    assert resume_job(completed.job_id, stage="transcribe") == completed
     assert extraction_calls == []
     assert len(model.calls) == previous_calls
 
 
-def test_default_cli_runs_transcription(
+def test_cli_can_stop_after_transcription(
     make_zip: Callable[[list[tuple[str, bytes]]], Path],
     probe_calls: list[bytes],
     model: _Model,
     extraction_calls: list[str],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default CLI runs now stop after transcription while preserving --stage ingest."""
+    """The CLI can explicitly stop after transcription while later phases remain pending."""
     archive = make_zip([("ep1.mp4", b"one")])
-    assert main(["run", "--zip", str(archive)]) == 0
+    assert main(["run", "--zip", str(archive), "--stage", "transcribe"]) == 0
     assert "transcribe done" in capsys.readouterr().out
     assert list_jobs()[0].stages.transcribe.status == "done"
     assert extraction_calls == ["E01"]

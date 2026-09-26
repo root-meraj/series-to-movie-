@@ -1,4 +1,4 @@
-"""Job management through Phase 2: ingestion and resumable transcription."""
+"""Job management through Phase 3: ingestion, transcription, and scene alignment."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sts.config import Settings
 from sts.pipeline.ingest import ingest_zip
+from sts.pipeline.scenes import build_scenes
 from sts.pipeline.transcribe import transcribe_job
 from sts.schemas import ErrorRecord, JobParams, JobState, read_json, write_json
 
@@ -51,12 +52,15 @@ def _run_stages(job_dir: Path, stage: str) -> JobState:
     state = _run_ingest(job_dir)
     if stage == "ingest":
         return state
-    return transcribe_job(job_dir)
+    state = transcribe_job(job_dir)
+    if stage == "transcribe":
+        return state
+    return build_scenes(job_dir)
 
 
 def _validate_stage(stage: str) -> None:
-    if stage not in {"ingest", "transcribe"}:
-        raise ValueError("Only --stage ingest or transcribe is implemented in Phase 2")
+    if stage not in {"ingest", "transcribe", "scenes"}:
+        raise ValueError("Only --stage ingest, transcribe, or scenes is implemented in Phase 3")
 
 
 def run_job(
@@ -66,9 +70,9 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "transcribe",
+    stage: str = "scenes",
 ) -> JobState:
-    """Create a new job and run through transcription, or stop after ingestion."""
+    """Create a new job and run through scene alignment, or stop at an earlier stage."""
     _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
@@ -78,6 +82,7 @@ def run_job(
         whisper_device=settings.whisper_device,
         whisper_compute=settings.whisper_compute,
         detector_threshold=settings.detector_threshold,
+        min_scene_seconds=settings.min_scene_seconds,
         zip_path=zip_path.resolve(),
         name=name,
     )
@@ -93,7 +98,7 @@ def run_job(
 
 
 def resume_job(
-    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "transcribe"
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "scenes"
 ) -> JobState:
     """Resume through the requested stage, using checkpoints and persisted model settings."""
     _validate_stage(stage)

@@ -1,4 +1,4 @@
-"""Command-line ingestion, transcription, and job inspection."""
+"""Command-line ingestion, transcription, scene alignment, and job inspection."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.table import Table
+from rich.table import Column, Table
 
 from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
 
@@ -16,14 +16,16 @@ from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sts", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="Create a job (through Phase 2: transcription)")
+    run = commands.add_parser("run", help="Create a job (through Phase 3: scene alignment)")
     run.add_argument("--zip", type=Path, required=True)
     run.add_argument("--target-minutes", type=float, default=None)
     run.add_argument("--name")
-    resume = commands.add_parser("resume", help="Resume a saved job through transcription")
+    resume = commands.add_parser("resume", help="Resume a saved job through scene alignment")
     resume.add_argument("--job", required=True)
     for command in (run, resume):
-        command.add_argument("--stage", choices=["ingest", "transcribe"], default="transcribe")
+        command.add_argument(
+            "--stage", choices=["ingest", "transcribe", "scenes"], default="scenes"
+        )
     status = commands.add_parser("status", help="Show state JSON or list all jobs")
     status.add_argument("--job")
     listing = commands.add_parser("list", help="List saved jobs")
@@ -33,14 +35,23 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _show_jobs(console: Console, jobs_dir: Path) -> None:
-    table = Table("Job", "Name", "Created", "Ingest", "Transcribe", "Episodes")
+    table = Table(
+        Column("Job", min_width=12, no_wrap=True),
+        "Name",
+        "Created",
+        "Ingest",
+        "Transcribe",
+        "Scenes",
+        "Episodes",
+    )
     for state in list_jobs(jobs_dir=jobs_dir):
         table.add_row(
             state.job_id,
             state.params.name or "",
-            state.created_at.isoformat(),
+            state.created_at.strftime("%Y-%m-%d"),
             state.stages.ingest.status,
             state.stages.transcribe.status,
+            state.stages.scenes.status,
             str(state.stages.ingest.episode_count),
         )
     console.print(table)

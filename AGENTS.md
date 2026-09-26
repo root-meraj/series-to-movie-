@@ -132,6 +132,36 @@ Phase 2 contract additions and clarifications (existing keys are unchanged):
   runs the CLI on the synthetic fixture with real `small` Whisper on CPU/int8,
   downloading/caching it on first use. Its generated job is retained in `data/jobs`.
 
+Phase 3 contract additions and clarifications (existing keys are unchanged):
+
+- `state.params.min_scene_seconds` persists the scene-merging minimum (default
+  5.0 for older jobs). Scene detection uses saved threshold/minimum settings on
+  resume. `state.stages.scenes` adds `completed` and `pending` episode ID lists.
+- `scenes.json` remains the specified array of SceneRecord objects. It is written
+  atomically after each episode, before that episode's state checkpoint. Resume
+  keeps valid records for checkpointed episodes and rebuilds missing/invalid
+  records or records written before their checkpoint. A completed stage is skipped.
+- Detection uses ContentDetector with a one-frame internal minimum, followed by
+  the configured minimum in seconds. `start_in_scene=True` retains videos without
+  cuts. Consecutive short scenes merge forward; a short final remainder merges
+  backward. A whole video shorter than the minimum remains one valid scene.
+- `align` accepts one episode's chronological SceneRecord skeletons, transcript
+  segments, and per-second RMS list. It preserves metadata and returns new records.
+  A contained segment belongs to its midpoint's scene; crossing segments belong
+  to the greatest overlap. For tied overlaps, text is split proportionally at word
+  boundaries, with half-word rounding favoring the earlier scene. The same rule
+  applies if a segment crosses more than two scenes.
+- `dialogue_ratio` measures the union of actual nonempty speech intervals clipped
+  to each scene, independently of which scene receives the text. Overlapping
+  transcript segments never double-count speech time. `audio_rms` is the mean of
+  per-second RMS bins weighted by time overlap with the scene; unavailable bins
+  contribute zero. No-dialogue scenes are retained with zero dialogue ratio.
+- Scene IDs are sequential per episode (`E01_s0001`, etc.). `is_first` and
+  `is_last` mark only the season's first and last scenes. `characters` stays empty
+  until Phase 4. `run` and `resume` now default to `--stage scenes`, retaining
+  explicit `--stage ingest` and `--stage transcribe` stops. NLP and later stages
+  remain pending.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

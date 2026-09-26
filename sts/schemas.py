@@ -199,6 +199,7 @@ class JobParams(ContractModel):
     whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
     whisper_compute: Literal["auto", "int8", "float16"] = "auto"
     detector_threshold: float = Field(default=27.0, gt=0)
+    min_scene_seconds: float = Field(default=5.0, gt=0)
     zip_path: Path | None = None
     zip_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     name: str | None = None
@@ -229,7 +230,7 @@ class JobStages(ContractModel):
 
     ingest: IngestState = Field(default_factory=IngestState)
     transcribe: EpisodeStageState = Field(default_factory=EpisodeStageState)
-    scenes: StageState = Field(default_factory=StageState)
+    scenes: EpisodeStageState = Field(default_factory=EpisodeStageState)
     nlp: StageState = Field(default_factory=StageState)
     select: StageState = Field(default_factory=StageState)
     render: StageState = Field(default_factory=StageState)

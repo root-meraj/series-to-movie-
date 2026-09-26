@@ -5,10 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 2 adds audio extraction, Whisper transcription, hallucination filtering,
-per-second RMS features, and per-episode resume. Settings, JSON schemas, ingestion,
-and the controller/CLI are implemented. Runs stop after transcription; scene
-detection and later stages remain placeholders.
+Phase 3 adds scene detection, minimum-duration merging, and dialogue/audio
+alignment. Settings, schemas, ingestion, transcription, and per-episode resume are
+implemented. Runs stop after producing `scenes.json`; NLP scoring, selection,
+and rendering remain placeholders.
 
 ## Development setup
 
@@ -22,6 +22,7 @@ From this directory on Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install pytest ruff rich "pydantic>=2,<3" "pydantic-settings>=2,<3" python-dotenv
 .\.venv\Scripts\python.exe -m pip install faster-whisper numpy soundfile
+.\.venv\Scripts\python.exe -m pip install "scenedetect[opencv]"
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe scripts/make_fixture.py
 .\.venv\Scripts\python.exe -m ruff check .
@@ -29,7 +30,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 2. Install the complete
+These dependencies are sufficient through Phase 3. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -41,10 +42,10 @@ Whisper is loaded lazily and cached for reuse across episodes. The configured mo
 (`small` by default) downloads into the Hugging Face cache the first time it is used.
 For CPU execution, set `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE=int8` in `.env`.
 
-## Process a season through transcription
+## Process a season through scene alignment
 
 ```powershell
-.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --stage transcribe --target-minutes 2 --name "Fixture Show"
+.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --stage scenes --target-minutes 2 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
 .\.venv\Scripts\sts.exe list
@@ -53,8 +54,9 @@ For CPU execution, set `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE=int8` in `.env`
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
-Both `run` and `resume` default to `--stage transcribe`. To stop after ingestion,
-pass `--stage ingest` to either command. The job list shows both stage statuses.
+Both `run` and `resume` default to `--stage scenes`. To stop earlier, pass
+`--stage ingest` or `--stage transcribe` to either command. The job list shows
+all three implemented stage statuses.
 
 The fixture becomes `E01.mp4` (show.S01E01), `E02.mkv` (show_1x02), and `E03.mp4`
 (ep10). Nested ZIP folders are supported, and original container extensions are
@@ -82,6 +84,19 @@ are committed. Resume validates artifacts for completed episodes in an unfinishe
 stage and regenerates missing or invalid outputs. Saved Whisper settings are used
 even if `.env` changes; start a new job to use a different model configuration.
 
+Scene detection retains uncut videos as a single scene. Short scenes merge into
+neighbors without dropping footage. Detection threshold and minimum scene length
+are saved per job and reused on resume. The stage writes `scenes.json` and records
+progress after each episode, so a failure partway through a season does not force
+redetection of completed episodes.
+
+Scene alignment assigns contained dialogue by midpoint and crossing dialogue by
+largest overlap. Ties divide words proportionally. Dialogue ratios count actual
+speech time in each scene, merging overlapping speech intervals to avoid double
+counting. Audio RMS is weighted for fractional-second boundaries. Silent scenes
+are kept; first/last flags refer to the season's endpoints, and character lists
+remain empty until Phase 4.
+
 ## Fixtures and checks
 
 `scripts/make_fixture.py` generates `tests/fixtures/ep_test.mp4` (90 seconds,
@@ -95,6 +110,9 @@ unsafe/corrupt input, CLI behavior, and recovery after a mid-ingestion failure.
 Unit tests mock FFprobe and Whisper, and model construction is blocked during unit
 tests. They include generator failures, filter boundaries, RMS for partial seconds,
 disk-write failures, and mid-season recovery. Normal pytest exit codes apply.
+Scene tests cover uncut footage, short-scene merging, midpoint/crossing/tie cases,
+silent scenes, overlapping dialogue, fractional RMS windows, and crash recovery
+between writing scene records and updating the checkpoint.
 
 The real-model integration smoke test is skipped by default. Run it explicitly:
 
@@ -107,5 +125,6 @@ and retains its job under `data/jobs/`. It may download the model on first use. 
 synthetic sine-wave fixture does not test transcription quality on spoken dialogue.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 2, episodes, WAV/RMS files, transcripts, and
-`state.json` are populated; no condensed video or subtitles are rendered yet.
+`output` directories. Through Phase 3, episodes, WAV/RMS files, transcripts,
+`scenes.json`, and `state.json` are populated. No condensed video or subtitles are
+rendered yet.
