@@ -106,6 +106,32 @@ Phase 1 contract additions and clarifications (existing keys are unchanged):
   `--jobs-dir` is available on each. `run` defaults to ingestion only until later
   phases implement the remaining stages. Rendering is not available yet.
 
+Phase 2 contract additions and clarifications (existing keys are unchanged):
+
+- Each extracted audio file also has `audio/E##.rms.json`, modeled by AudioFeaturesDoc:
+  {"episode":"E01","sample_rate":16000,"duration":2.5,"rms_per_second":[0.0,0.5,1.0]}.
+  The list contains one finite nonnegative RMS value per one-second sample window.
+  The final partial second uses only its actual samples, so list length is
+  `ceil(duration)`. Audio is decoded once per processed episode and the same float32
+  NumPy waveform is passed to Whisper. The existing transcript JSON shape is unchanged.
+- `state.params` also persists `whisper_device` and `whisper_compute` (both default
+  to `auto` for older jobs). Resume uses the saved Whisper model, device, and compute
+  settings so environment changes do not mix configurations within a season.
+- A transcription episode enters `completed` only after its WAV, RMS JSON, and
+  transcript JSON are committed. An unfinished stage validates completed artifacts
+  and regenerates missing/invalid outputs. A stage already marked `done` is skipped.
+- Transcription drops segments with `no_speech_prob > 0.6`, `avg_logprob < -1.0`,
+  empty text, or non-finite timestamps/confidence values. Consecutive retained texts
+  are compared with collapsed whitespace and casefolding. Timestamps are clamped
+  to the audio bounds; zero-length/reversed results are discarded. Empty transcripts
+  are valid. Videos with no decodable audio stream fail with a recorded error.
+- Phase 2 `run` and `resume` default to `--stage transcribe`; `--stage ingest` still
+  stops after ingestion. Scene detection and all later stages remain pending.
+- Ordinary pytest runs prohibit real Whisper model construction. The opt-in
+  integration smoke test (`pytest tests/test_transcribe_smoke.py --run-model-smoke -s`)
+  runs the CLI on the synthetic fixture with real `small` Whisper on CPU/int8,
+  downloading/caching it on first use. Its generated job is retained in `data/jobs`.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

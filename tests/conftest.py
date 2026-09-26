@@ -10,6 +10,33 @@ from pathlib import Path
 import pytest
 
 from sts.config import Settings
+from sts.pipeline import transcribe
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Keep the real-model integration smoke test opt-in."""
+    parser.addoption("--run-model-smoke", action="store_true", help="Run real Whisper smoke test")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip tests requiring downloaded models unless explicitly requested."""
+    if not config.getoption("--run-model-smoke"):
+        for item in items:
+            if item.get_closest_marker("integration"):
+                item.add_marker(pytest.mark.skip(reason="use --run-model-smoke for real Whisper"))
+
+
+@pytest.fixture(autouse=True)
+def prevent_real_whisper(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make accidental model loading an immediate failure in every unit test."""
+    if request.node.get_closest_marker("integration"):
+        return
+
+    def fail_model(cfg: Settings) -> None:
+        raise AssertionError("Unit tests must mock Whisper; real model loading is forbidden")
+
+    monkeypatch.setattr(transcribe, "_MODEL", None)
+    monkeypatch.setattr(transcribe, "_create_model", fail_model)
 
 
 @pytest.fixture(autouse=True)

@@ -189,3 +189,40 @@ def test_failed_atomic_replace_preserves_previous_checkpoint(
     assert path.read_bytes() == previous
     assert read_json(path, JobState) == original
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize("permanent", [False, True])
+def test_windows_checkpoint_lock_has_bounded_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, permanent: bool
+) -> None:
+    """A transient Windows sharing lock retries; a permanent one preserves the prior state."""
+    path = tmp_path / "state.json"
+    original = JobState(job_id="original")
+    write_json(path, original)
+    replace = Path.replace
+    attempts: list[Path] = []
+    delays: list[float] = []
+
+    def locked_replace(self: Path, target: Path) -> Path:
+        attempts.append(self)
+        if permanent or len(attempts) == 1:
+            error = PermissionError("simulated Windows sharing lock")
+            error.winerror = 32
+            raise error
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", locked_replace)
+    monkeypatch.setattr("sts.schemas.time.sleep", delays.append)
+    updated = JobState(job_id="updated")
+    if permanent:
+        with pytest.raises(PermissionError, match="sharing lock"):
+            write_json(path, updated)
+        assert read_json(path, JobState) == original
+        assert len(attempts) == 5
+        assert delays == [0.05, 0.1, 0.2, 0.4]
+    else:
+        write_json(path, updated)
+        assert read_json(path, JobState) == updated
+        assert len(attempts) == 2
+        assert delays == [0.05]
+    assert list(tmp_path.glob("*.tmp")) == []

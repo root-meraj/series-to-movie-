@@ -30,8 +30,8 @@ def test_cli_resume_skips_completed_ingestion(
 ) -> None:
     """Resuming via the CLI uses saved parameters and leaves finished episodes untouched."""
     archive = make_zip([("ep1.mp4", b"one")])
-    assert main(["run", "--zip", str(archive)]) == 0
-    assert main(["resume", "--job", list_jobs()[0].job_id]) == 0
+    assert main(["run", "--zip", str(archive), "--stage", "ingest"]) == 0
+    assert main(["resume", "--job", list_jobs()[0].job_id, "--stage", "ingest"]) == 0
     assert probe_calls == [b"one"]
 
 

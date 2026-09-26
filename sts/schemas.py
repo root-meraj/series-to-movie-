@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -57,6 +58,22 @@ class TranscriptDoc(ContractModel):
     episode: EpisodeId
     language: str = Field(min_length=1)
     segments: list[TranscriptSegment] = Field(default_factory=list)
+
+
+class AudioFeaturesDoc(ContractModel):
+    """The audio/E##.rms.json contract, with one RMS value per second of audio."""
+
+    episode: EpisodeId
+    sample_rate: Literal[16000] = 16000
+    duration: float = Field(gt=0)
+    rms_per_second: list[Seconds]
+
+    @model_validator(mode="after")
+    def validate_rms_count(self) -> AudioFeaturesDoc:
+        """Include a final partial second, without padding its RMS calculation."""
+        if len(self.rms_per_second) != math.ceil(self.duration):
+            raise ValueError("rms_per_second must contain ceil(duration) values")
+        return self
 
 
 class SceneRecord(TimedRange):
@@ -178,7 +195,9 @@ class JobParams(ContractModel):
     """Persisted run parameters, excluding credentials."""
 
     target_seconds: float = Field(default=7200.0, gt=0)
-    whisper_model: str = "small"
+    whisper_model: Literal["tiny", "base", "small", "medium"] = "small"
+    whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
+    whisper_compute: Literal["auto", "int8", "float16"] = "auto"
     detector_threshold: float = Field(default=27.0, gt=0)
     zip_path: Path | None = None
     zip_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
@@ -258,7 +277,16 @@ def write_json(path: Path, document: BaseModel) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary_path.replace(path)
+        for attempt in range(5):
+            try:
+                temporary_path.replace(path)
+                break
+            except PermissionError as exc:
+                # Windows indexers/readers can briefly hold the destination open.
+                # Never unlink it: the previous checkpoint must remain intact.
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(0.05 * 2**attempt)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

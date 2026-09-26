@@ -5,9 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 1 implements validated settings, all JSON schemas, ZIP ingestion, and a
-controller/CLI skeleton with per-episode resume. Transcription and later pipeline
-stages remain placeholders. Runs currently stop after ingestion.
+Phase 2 adds audio extraction, Whisper transcription, hallucination filtering,
+per-second RMS features, and per-episode resume. Settings, JSON schemas, ingestion,
+and the controller/CLI are implemented. Runs stop after transcription; scene
+detection and later stages remain placeholders.
 
 ## Development setup
 
@@ -20,6 +21,7 @@ From this directory on Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install pytest ruff rich "pydantic>=2,<3" "pydantic-settings>=2,<3" python-dotenv
+.\.venv\Scripts\python.exe -m pip install faster-whisper numpy soundfile
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe scripts/make_fixture.py
 .\.venv\Scripts\python.exe -m ruff check .
@@ -27,7 +29,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These lightweight dependencies are sufficient for Phase 1. Install the complete
+These dependencies are sufficient through Phase 2. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -35,12 +37,14 @@ is included for Pydantic 2 environment-backed settings.
 Copy `.env.example` to `.env` to customize settings. Nonsecret settings also support
 process environment overrides. `OPENAI_API_KEY` is read only from `.env`, excluded
 from settings serialization, and never saved to job state. Never commit secrets.
-Model setup belongs to the phases that use models; Phase 1 downloads none.
+Whisper is loaded lazily and cached for reuse across episodes. The configured model
+(`small` by default) downloads into the Hugging Face cache the first time it is used.
+For CPU execution, set `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE=int8` in `.env`.
 
-## Ingest a season
+## Process a season through transcription
 
 ```powershell
-.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --stage ingest --target-minutes 2 --name "Fixture Show"
+.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --stage transcribe --target-minutes 2 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
 .\.venv\Scripts\sts.exe list
@@ -49,6 +53,8 @@ Model setup belongs to the phases that use models; Phase 1 downloads none.
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
+Both `run` and `resume` default to `--stage transcribe`. To stop after ingestion,
+pass `--stage ingest` to either command. The job list shows both stage statuses.
 
 The fixture becomes `E01.mp4` (show.S01E01), `E02.mkv` (show_1x02), and `E03.mp4`
 (ep10). Nested ZIP folders are supported, and original container extensions are
@@ -63,6 +69,19 @@ The source ZIP checksum prevents mixing different archives in one job. Completed
 stages are skipped even if the original ZIP is no longer present. There is no
 support yet for concurrent processes writing the same job.
 
+Transcription extracts each episode's first audio stream to a 16 kHz mono PCM WAV,
+decodes it once, and passes the waveform to Whisper with VAD enabled. It removes
+low-confidence/no-speech segments and consecutive duplicate text. Silent or
+music-only input may correctly produce an empty transcript. A video with no audio
+stream fails with an error recorded in state.
+
+Each episode produces `audio/E##.wav`, `audio/E##.rms.json`, and
+`transcripts/E##.transcript.json`. RMS values cover one-second windows, including
+the final partial second. An episode is checkpointed only after all three files
+are committed. Resume validates artifacts for completed episodes in an unfinished
+stage and regenerates missing or invalid outputs. Saved Whisper settings are used
+even if `.env` changes; start a new job to use a different model configuration.
+
 ## Fixtures and checks
 
 `scripts/make_fixture.py` generates `tests/fixtures/ep_test.mp4` (90 seconds,
@@ -73,8 +92,20 @@ Use `--output-dir PATH` to change the destination. Generated media is ignored by
 
 The tests cover settings, JSON contracts, atomic state writes, episode ordering,
 unsafe/corrupt input, CLI behavior, and recovery after a mid-ingestion failure.
-Unit tests mock FFprobe and use no ML models or external APIs. Normal pytest exit
-codes apply; the temporary Phase 0 empty-suite hook has been removed.
+Unit tests mock FFprobe and Whisper, and model construction is blocked during unit
+tests. They include generator failures, filter boundaries, RMS for partial seconds,
+disk-write failures, and mid-season recovery. Normal pytest exit codes apply.
+
+The real-model integration smoke test is skipped by default. Run it explicitly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_transcribe_smoke.py --run-model-smoke -s
+```
+
+This processes the fixture ZIP through the real CLI with `small` Whisper on CPU/int8
+and retains its job under `data/jobs/`. It may download the model on first use. The
+synthetic sine-wave fixture does not test transcription quality on spoken dialogue.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Only `episodes` and `state.json` are populated in Phase 1.
+`output` directories. Through Phase 2, episodes, WAV/RMS files, transcripts, and
+`state.json` are populated; no condensed video or subtitles are rendered yet.

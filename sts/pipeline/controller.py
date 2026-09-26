@@ -1,4 +1,4 @@
-"""Phase 1 job management; execution currently stops after ingestion."""
+"""Job management through Phase 2: ingestion and resumable transcription."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sts.config import Settings
 from sts.pipeline.ingest import ingest_zip
+from sts.pipeline.transcribe import transcribe_job
 from sts.schemas import ErrorRecord, JobParams, JobState, read_json, write_json
 
 
@@ -46,6 +47,18 @@ def _run_ingest(job_dir: Path) -> JobState:
     return read_json(job_dir / "state.json", JobState)
 
 
+def _run_stages(job_dir: Path, stage: str) -> JobState:
+    state = _run_ingest(job_dir)
+    if stage == "ingest":
+        return state
+    return transcribe_job(job_dir)
+
+
+def _validate_stage(stage: str) -> None:
+    if stage not in {"ingest", "transcribe"}:
+        raise ValueError("Only --stage ingest or transcribe is implemented in Phase 2")
+
+
 def run_job(
     zip_path: Path,
     target_minutes: float | None = None,
@@ -53,16 +66,17 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "ingest",
+    stage: str = "transcribe",
 ) -> JobState:
-    """Create a new job and run the implemented ingestion stage only."""
-    if stage != "ingest":
-        raise ValueError("Only --stage ingest is implemented in Phase 1")
+    """Create a new job and run through transcription, or stop after ingestion."""
+    _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
     params = JobParams(
         target_seconds=minutes * 60.0,
         whisper_model=settings.whisper_model,
+        whisper_device=settings.whisper_device,
+        whisper_compute=settings.whisper_compute,
         detector_threshold=settings.detector_threshold,
         zip_path=zip_path.resolve(),
         name=name,
@@ -75,12 +89,15 @@ def run_job(
     state = JobState(job_id=job_id, params=params)
     write_json(directory / "state.json", state)
     logging.getLogger(__name__).info("Created job %s", job_id)
-    return _run_ingest(directory)
+    return _run_stages(directory, stage)
 
 
-def resume_job(job_id: str, *, jobs_dir: Path = Path("data/jobs")) -> JobState:
-    """Resume ingestion from the last completed episode, or skip a finished stage."""
-    return _run_ingest(_job_dir(job_id, jobs_dir))
+def resume_job(
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "transcribe"
+) -> JobState:
+    """Resume through the requested stage, using checkpoints and persisted model settings."""
+    _validate_stage(stage)
+    return _run_stages(_job_dir(job_id, jobs_dir), stage)
 
 
 def get_status(job_id: str, *, jobs_dir: Path = Path("data/jobs")) -> JobState:

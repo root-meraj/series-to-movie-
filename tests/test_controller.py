@@ -17,7 +17,7 @@ def test_run_persists_parameters_and_leaves_later_stages_pending(
     tmp_path: Path, make_zip: Callable[[list[tuple[str, bytes]]], Path], probe_calls: list[bytes]
 ) -> None:
     """An ingest-only job never claims that transcription or downstream work ran."""
-    state = run_job(make_zip([("ep1.mp4", b"one")]), 2, name="Test Show")
+    state = run_job(make_zip([("ep1.mp4", b"one")]), 2, name="Test Show", stage="ingest")
     loaded = get_status(state.job_id)
     assert loaded == state
     assert loaded.params.target_seconds == 120.0
@@ -52,7 +52,7 @@ def test_mid_episode_failure_resumes_without_reprobing_completed_episode(
 
     monkeypatch.setattr("sts.pipeline.ingest.subprocess.run", fail_second)
     with pytest.raises(subprocess.TimeoutExpired):
-        run_job(archive)
+        run_job(archive, stage="ingest")
     failed = list_jobs()[0]
     assert failed.stages.ingest.status == "failed"
     assert failed.stages.ingest.completed == ["E01"]
@@ -62,7 +62,7 @@ def test_mid_episode_failure_resumes_without_reprobing_completed_episode(
     completed = tmp_path / "data/jobs" / failed.job_id / "episodes/E01.mp4"
     modified = completed.stat().st_mtime_ns
     monkeypatch.setattr("sts.pipeline.ingest.subprocess.run", probe)
-    resumed = resume_job(failed.job_id)
+    resumed = resume_job(failed.job_id, stage="ingest")
     assert resumed.stages.ingest.status == "done"
     assert resumed.stages.ingest.completed == ["E01", "E02", "E03"]
     assert resumed.stages.ingest.pending == []
@@ -78,10 +78,10 @@ def test_completed_job_resume_skips_all_io_work(
 ) -> None:
     """Completed ingestion remains inspectable/resumable without the original ZIP or FFprobe."""
     archive = make_zip([("ep1.mp4", b"one")])
-    state = run_job(archive)
+    state = run_job(archive, stage="ingest")
     archive.unlink()
     monkeypatch.setattr("sts.pipeline.ingest.shutil.which", lambda name: None)
-    assert resume_job(state.job_id) == state
+    assert resume_job(state.job_id, stage="ingest") == state
     assert probe_calls == [b"one"]
 
 
@@ -96,7 +96,7 @@ def test_unfinished_checkpoint_restores_damaged_episode_from_another_working_dir
     """Unfinished jobs verify completed bytes and restore missing or changed media on resume."""
     archive = make_zip([("ep1.mp4", b"one"), ("ep2.mp4", b"two")])
     jobs_dir = tmp_path / "jobs"
-    state = run_job(archive, jobs_dir=jobs_dir)
+    state = run_job(archive, jobs_dir=jobs_dir, stage="ingest")
     # Simulate interruption after the last episode checkpoint, before stage completion.
     state.stages.ingest.status = "in_progress"
     write_json(jobs_dir / state.job_id / "state.json", state)
@@ -109,7 +109,7 @@ def test_unfinished_checkpoint_restores_damaged_episode_from_another_working_dir
     other_directory = tmp_path / "elsewhere"
     other_directory.mkdir()
     monkeypatch.chdir(other_directory)
-    resumed = resume_job(state.job_id, jobs_dir=jobs_dir)
+    resumed = resume_job(state.job_id, jobs_dir=jobs_dir, stage="ingest")
     assert resumed.stages.ingest.status == "done"
     assert resumed.stages.ingest.completed == ["E01", "E02"]
     assert first.read_bytes() == b"one"
@@ -125,11 +125,11 @@ def test_changed_zip_cannot_mix_with_existing_checkpoint(
     archive = make_zip([("ep1.mp4", b"original")])
     monkeypatch.setattr("sts.pipeline.ingest.shutil.which", lambda name: None)
     with pytest.raises(RuntimeError):
-        run_job(archive)
+        run_job(archive, stage="ingest")
     job_id = list_jobs()[0].job_id
     make_zip([("ep1.mp4", b"changed")])
     with pytest.raises(ValueError, match="Source ZIP changed"):
-        resume_job(job_id)
+        resume_job(job_id, stage="ingest")
     assert get_status(job_id).stages.ingest.completed == []
     assert probe_calls == []
 
@@ -164,8 +164,8 @@ def test_list_jobs_is_newest_first_and_missing_root_is_empty(
     """Job discovery handles a clean workspace and returns newest runs first."""
     assert list_jobs() == []
     archive = make_zip([("ep1.mp4", b"one")])
-    first = run_job(archive)
-    second = run_job(archive)
+    first = run_job(archive, stage="ingest")
+    second = run_job(archive, stage="ingest")
     assert [job.job_id for job in list_jobs()] == [second.job_id, first.job_id]
 
 

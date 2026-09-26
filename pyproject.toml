@@ -29,3 +29,4 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = ["integration: opt-in smoke test using FFmpeg and a real Whisper model"]
