@@ -9,6 +9,9 @@ description = "Condense a TV season into a movie with a resumable NLP pipeline."
 requires-python = ">=3.10"
 dynamic = ["dependencies"]
 
+[project.scripts]
+sts = "sts.app.cli:main"
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 

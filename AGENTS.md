@@ -78,6 +78,34 @@ selected.json
 
 {  "target\_seconds": 7200,  "selected\_total\_seconds": 7042.3,  "clips": \[    {"scene\_id": "E01\_s0001", "episode": "E01", "source\_path": "...", "start": 0.0, "end": 45.2}  ],  "stats": {"scenes\_kept": 118, "scenes\_dropped": 340, "original\_seconds": 27000.0}}
 
+Phase 1 contract additions and clarifications (existing keys are unchanged):
+
+- `state.params` also supports `zip_path` (absolute string path), `zip_sha256`
+  (64-character hexadecimal source checksum), and `name` (optional show name).
+  These fields are optional when reading the original example above. Credentials
+  are never persisted. A changed ZIP must start a new job.
+- Stage status is one of `pending`, `in_progress`, `done`, or `failed`.
+- `state.stages.ingest` also stores `completed`, `pending` (episode ID lists),
+  and `episodes` (the validated EpisodeInfo manifest). `episode_count` counts
+  successfully committed episodes, including while a job is in progress.
+- Each EpisodeInfo has `episode`, `episode_number`, `source_path` (absolute path),
+  `original_name` (original ZIP entry name), and `duration` (float seconds, >= 60).
+  Example: {"episode":"E01","episode_number":1,"source_path":"/jobs/abc/episodes/E01.mp4",
+  "original_name":"show.S01E01.mp4","duration":90.0}.
+- Errors without an associated episode omit `episode`. Error history is retained
+  after successful resumption. Job and error dates are written in UTC ISO-8601.
+- `scores.json` remains an array. Baseline-only records omit `llm_score`,
+  `llm_plot_advance`, and `llm_reason` until Phase 6 supplies them; `final_score`
+  defaults to 0.0 until selection computes the weighted score.
+- Episode pattern priority determines how each filename is parsed. Explicit
+  season/episode pairs sort chronologically; seasonless `episode`, `ep`, and `e`
+  forms use season 1. Entirely unrecognized naming schemes use full natural
+  filename order. In a mixed archive, unrecognized names use season 1 and their
+  first numeric token as the episode hint, with natural order as the tie-breaker.
+- Phase 1 CLI supports `run --stage ingest`, `resume`, `status`, and `list`;
+  `--jobs-dir` is available on each. `run` defaults to ingestion only until later
+  phases implement the remaining stages. Rendering is not available yet.
+
 6\. MODULE SPECS
 
 6.1 ingest.py
