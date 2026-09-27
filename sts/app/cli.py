@@ -1,4 +1,4 @@
-"""Command-line ingestion, transcription, scene alignment, and job inspection."""
+"""Command-line processing through character preparation, plus job inspection."""
 
 from __future__ import annotations
 
@@ -16,15 +16,17 @@ from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sts", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="Create a job (through Phase 3: scene alignment)")
+    run = commands.add_parser("run", help="Create a job (through Phase 4: characters)")
     run.add_argument("--zip", type=Path, required=True)
     run.add_argument("--target-minutes", type=float, default=None)
     run.add_argument("--name")
-    resume = commands.add_parser("resume", help="Resume a saved job through scene alignment")
+    resume = commands.add_parser("resume", help="Resume a saved job through character preparation")
     resume.add_argument("--job", required=True)
     for command in (run, resume):
         command.add_argument(
-            "--stage", choices=["ingest", "transcribe", "scenes"], default="scenes"
+            "--stage",
+            choices=["ingest", "transcribe", "scenes", "characters"],
+            default="characters",
         )
     status = commands.add_parser("status", help="Show state JSON or list all jobs")
     status.add_argument("--job")
@@ -38,20 +40,20 @@ def _show_jobs(console: Console, jobs_dir: Path) -> None:
     table = Table(
         Column("Job", min_width=12, no_wrap=True),
         "Name",
-        "Created",
         "Ingest",
         "Transcribe",
         "Scenes",
+        "Characters",
         "Episodes",
     )
     for state in list_jobs(jobs_dir=jobs_dir):
         table.add_row(
             state.job_id,
             state.params.name or "",
-            state.created_at.strftime("%Y-%m-%d"),
             state.stages.ingest.status,
             state.stages.transcribe.status,
             state.stages.scenes.status,
+            state.stages.nlp.characters.status,
             str(state.stages.ingest.episode_count),
         )
     console.print(table)

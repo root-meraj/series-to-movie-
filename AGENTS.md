@@ -162,6 +162,52 @@ Phase 3 contract additions and clarifications (existing keys are unchanged):
   explicit `--stage ingest` and `--stage transcribe` stops. NLP and later stages
   remain pending.
 
+Phase 4 contract additions and clarifications (existing keys are unchanged):
+
+- `state.params` adds `max_characters` (positive integer, default 12) and
+  `sbert_model` (default `all-MiniLM-L6-v2`). New jobs save these settings; older
+  jobs use the defaults. Resume uses the saved character cap.
+- `state.stages.nlp.characters` records `status`, `completed`, and `pending` for
+  per-episode character extraction. After Phase 4, this substage is `done` while
+  the overall NLP stage is `in_progress`: baseline and LLM scoring are still
+  future phases. Character failures mark both statuses `failed` and record an
+  `nlp` error, including the episode when extraction fails.
+- `transcripts/E##.characters.json` is a CharacterMentionsDoc checkpoint:
+  {"episode":"E01","mentions":[{"name":"Walter White","mention_count":3}]}.
+  Counts are positive integers. Every raw PERSON surface form is retained;
+  capping and fuzzy merging occur only after aggregating all episodes. Empty
+  mention lists are valid. Each file is committed before its episode checkpoint.
+  An unfinished stage repairs missing/invalid caches; a completed substage skips.
+- `preprocess(text)` strips uppercase speaker prefixes at each line start before
+  collapsing whitespace. Sentence splitting uses a cached blank English spaCy
+  sentencizer, requiring no trained-model download.
+- `extract_characters` consumes an iterable of TranscriptDoc objects, one episode
+  at a time. Trained `en_core_web_sm` is loaded lazily and cached; installation is
+  an explicit setup step, never an import-time download. PERSON entities only
+  contribute to the character table.
+- Alias deduplication compares casefolded names using `token_sort_ratio > 88`.
+  The most frequent spelling is canonical; ties prefer more words, then longer
+  names, then alphabetical order. Each candidate compares against canonical names,
+  avoiding transitive alias chains. No first-name/nickname relationship is inferred.
+  Groups rank by total mentions, then alphabetical order. The top MAX_CHARACTERS
+  groups are retained with `is_main: true`.
+- Scene `characters` lists contain canonical names matched case-insensitively
+  through whole-word canonical names or observed aliases in cleaned dialogue.
+  All other scene fields remain unchanged. These are mentions, not proof that a
+  character appears on screen.
+- `embed(texts, *, model_name=None)` uses the configured SBERT_MODEL by default,
+  with an optional override for saved job settings. The singleton is replaced
+  when the requested model changes. Output is float32 with L2-normalized nonblank
+  rows. Blank inputs have zero vectors, avoiding false similarities for silence;
+  an empty list returns shape (0, 0) without loading a model.
+- `run` and `resume` now default to `--stage characters`; earlier explicit stops
+  remain supported. Phase 4 writes `characters.json` and enriches `scenes.json`,
+  without producing `scores.json` or starting selection/rendering.
+- Ordinary pytest blocks trained spaCy and SentenceTransformer construction,
+  in addition to Whisper. The opt-in NLP smoke test is
+  `pytest tests/test_nlp_smoke.py --run-model-smoke -s`; it exercises real PERSON
+  extraction, character artifacts, normalized embeddings, and singleton reuse.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

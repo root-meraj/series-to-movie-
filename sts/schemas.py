@@ -122,6 +122,20 @@ class CharacterTable(ContractModel):
     characters: list[CharacterRecord] = Field(default_factory=list)
 
 
+class CharacterMention(ContractModel):
+    """An unmerged PERSON surface form and its per-episode frequency."""
+
+    name: str = Field(min_length=1)
+    mention_count: int = Field(ge=1)
+
+
+class CharacterMentionsDoc(ContractModel):
+    """The transcripts/E##.characters.json checkpoint before season-wide deduplication."""
+
+    episode: EpisodeId
+    mentions: list[CharacterMention] = Field(default_factory=list)
+
+
 class ScoreRecord(ContractModel):
     """Scene scores, with LLM fields omitted until the LLM stage runs."""
 
@@ -200,6 +214,8 @@ class JobParams(ContractModel):
     whisper_compute: Literal["auto", "int8", "float16"] = "auto"
     detector_threshold: float = Field(default=27.0, gt=0)
     min_scene_seconds: float = Field(default=5.0, gt=0)
+    max_characters: int = Field(default=12, gt=0)
+    sbert_model: str = Field(default="all-MiniLM-L6-v2", min_length=1)
     zip_path: Path | None = None
     zip_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     name: str | None = None
@@ -225,13 +241,19 @@ class IngestState(EpisodeStageState):
     episodes: list[EpisodeInfo] = Field(default_factory=list)
 
 
+class NLPState(StageState):
+    """NLP progress; character preparation precedes the later scoring phases."""
+
+    characters: EpisodeStageState = Field(default_factory=EpisodeStageState)
+
+
 class JobStages(ContractModel):
     """The six stages, in pipeline execution order."""
 
     ingest: IngestState = Field(default_factory=IngestState)
     transcribe: EpisodeStageState = Field(default_factory=EpisodeStageState)
     scenes: EpisodeStageState = Field(default_factory=EpisodeStageState)
-    nlp: StageState = Field(default_factory=StageState)
+    nlp: NLPState = Field(default_factory=NLPState)
     select: StageState = Field(default_factory=StageState)
     render: StageState = Field(default_factory=StageState)
 

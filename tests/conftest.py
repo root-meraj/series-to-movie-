@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from sts.config import Settings
+from sts.nlp import embeddings, ner
 from sts.pipeline import transcribe
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Keep the real-model integration smoke test opt-in."""
-    parser.addoption("--run-model-smoke", action="store_true", help="Run real Whisper smoke test")
+    """Keep integration smoke tests using trained models opt-in."""
+    parser.addoption("--run-model-smoke", action="store_true", help="Run trained-model smoke tests")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -23,11 +24,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not config.getoption("--run-model-smoke"):
         for item in items:
             if item.get_closest_marker("integration"):
-                item.add_marker(pytest.mark.skip(reason="use --run-model-smoke for real Whisper"))
+                item.add_marker(pytest.mark.skip(reason="use --run-model-smoke for trained models"))
 
 
 @pytest.fixture(autouse=True)
-def prevent_real_whisper(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def prevent_real_models(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make accidental model loading an immediate failure in every unit test."""
     if request.node.get_closest_marker("integration"):
         return
@@ -35,8 +36,18 @@ def prevent_real_whisper(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     def fail_model(cfg: Settings) -> None:
         raise AssertionError("Unit tests must mock Whisper; real model loading is forbidden")
 
+    def fail_ner() -> None:
+        raise AssertionError("Unit tests must mock trained spaCy NER")
+
+    def fail_embedding(name: str) -> None:
+        raise AssertionError("Unit tests must mock SentenceTransformer")
+
     monkeypatch.setattr(transcribe, "_MODEL", None)
     monkeypatch.setattr(transcribe, "_create_model", fail_model)
+    monkeypatch.setattr(ner, "_NLP", None)
+    monkeypatch.setattr(ner, "_create_nlp", fail_ner)
+    monkeypatch.setattr(embeddings, "_MODEL", None)
+    monkeypatch.setattr(embeddings, "_create_model", fail_embedding)
 
 
 @pytest.fixture(autouse=True)

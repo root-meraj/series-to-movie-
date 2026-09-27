@@ -132,7 +132,7 @@ def test_scene_stage_writes_all_contract_fields_and_season_bookends(
     transcribed_job: JobState, detector_calls: list[tuple[str, float, float]]
 ) -> None:
     """Every scene, including silence, is retained with only season-wide first/last flags."""
-    completed = resume_job(transcribed_job.job_id)
+    completed = resume_job(transcribed_job.job_id, stage="scenes")
     assert completed.stages.scenes.status == "done"
     assert completed.stages.scenes.completed == ["E01", "E02", "E03"]
     assert completed.stages.scenes.pending == []
@@ -170,7 +170,7 @@ def test_scene_failure_resumes_only_unfinished_episodes_with_saved_settings(
 
     monkeypatch.setattr(scenes, "detect_scenes", fail_second)
     with pytest.raises(RuntimeError, match="detector failure"):
-        resume_job(transcribed_job.job_id)
+        resume_job(transcribed_job.job_id, stage="scenes")
     failed = get_status(transcribed_job.job_id)
     assert failed.stages.scenes.completed == ["E01"]
     assert failed.stages.scenes.pending == ["E02", "E03"]
@@ -180,7 +180,7 @@ def test_scene_failure_resumes_only_unfinished_episodes_with_saved_settings(
     monkeypatch.setattr(scenes, "detect_scenes", original)
     monkeypatch.setenv("DETECTOR_THRESHOLD", "99")
     monkeypatch.setenv("MIN_SCENE_SECONDS", "20")
-    completed = resume_job(failed.job_id)
+    completed = resume_job(failed.job_id, stage="scenes")
     assert completed.stages.scenes.status == "done"
     assert len(completed.errors) == 1
     assert read_json(scene_path, ScenesDoc).root[:2] == previous
@@ -202,12 +202,12 @@ def test_interrupt_between_scene_write_and_checkpoint_does_not_duplicate_records
 
     monkeypatch.setattr(scenes, "write_json", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        resume_job(transcribed_job.job_id)
+        resume_job(transcribed_job.job_id, stage="scenes")
     directory = Path("data/jobs") / transcribed_job.job_id
     assert get_status(transcribed_job.job_id).stages.scenes.completed == []
     assert len(read_json(directory / "scenes.json", ScenesDoc).root) == 2
     monkeypatch.setattr(scenes, "write_json", original)
-    resume_job(transcribed_job.job_id)
+    resume_job(transcribed_job.job_id, stage="scenes")
     records = read_json(directory / "scenes.json", ScenesDoc).root
     assert len(records) == len({record.scene_id for record in records}) == 6
     assert [call[0] for call in detector_calls] == ["E01", "E01", "E02", "E03"]
@@ -218,7 +218,7 @@ def test_unfinished_stage_repairs_scene_artifacts(
     transcribed_job: JobState, detector_calls: list[tuple[str, float, float]], damage: str
 ) -> None:
     """Missing or invalid aggregate records do not cause an unfinished stage to skip needed work."""
-    completed = resume_job(transcribed_job.job_id)
+    completed = resume_job(transcribed_job.job_id, stage="scenes")
     directory = Path("data/jobs") / completed.job_id
     path = directory / "scenes.json"
     completed.stages.scenes.status = "in_progress"
@@ -230,7 +230,7 @@ def test_unfinished_stage_repairs_scene_artifacts(
     else:
         write_json(path, ScenesDoc(read_json(path, ScenesDoc).root[2:]))
     detector_calls.clear()
-    assert resume_job(completed.job_id).stages.scenes.status == "done"
+    assert resume_job(completed.job_id, stage="scenes").stages.scenes.status == "done"
     assert [call[0] for call in detector_calls] == (
         ["E01"] if damage == "missing_episode" else ["E01", "E02", "E03"]
     )
@@ -246,7 +246,7 @@ def test_wrong_transcript_episode_records_failure(
         directory / "transcripts/E01.transcript.json", TranscriptDoc(episode="E02", language="en")
     )
     with pytest.raises(ValueError, match="identifiers must match E01"):
-        resume_job(transcribed_job.job_id)
+        resume_job(transcribed_job.job_id, stage="scenes")
     failed = get_status(transcribed_job.job_id)
     assert failed.stages.scenes.status == "failed"
     assert failed.stages.scenes.completed == []
@@ -254,18 +254,18 @@ def test_wrong_transcript_episode_records_failure(
     assert detector_calls == []
 
 
-def test_default_cli_resume_runs_scenes_and_completed_stage_is_idempotent(
+def test_cli_scene_stop_and_completed_stage_are_idempotent(
     transcribed_job: JobState,
     detector_calls: list[tuple[str, float, float]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default CLI resumes through scenes, and repeated resume leaves its checkpoint unchanged."""
-    assert main(["resume", "--job", transcribed_job.job_id]) == 0
+    """An explicit scene stop preserves later stages, and repeated resume leaves state unchanged."""
+    assert main(["resume", "--job", transcribed_job.job_id, "--stage", "scenes"]) == 0
     assert "scenes done" in capsys.readouterr().out
     directory = Path("data/jobs") / transcribed_job.job_id
     paths = [directory / "state.json", directory / "scenes.json"]
     previous = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     detector_calls.clear()
-    assert main(["resume", "--job", transcribed_job.job_id]) == 0
+    assert main(["resume", "--job", transcribed_job.job_id, "--stage", "scenes"]) == 0
     assert detector_calls == []
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == previous

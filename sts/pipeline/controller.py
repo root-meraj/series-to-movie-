@@ -1,4 +1,4 @@
-"""Job management through Phase 3: ingestion, transcription, and scene alignment."""
+"""Job management through Phase 4, ending with character preparation."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sts.config import Settings
+from sts.nlp.ner import build_characters
 from sts.pipeline.ingest import ingest_zip
 from sts.pipeline.scenes import build_scenes
 from sts.pipeline.transcribe import transcribe_job
@@ -55,12 +56,15 @@ def _run_stages(job_dir: Path, stage: str) -> JobState:
     state = transcribe_job(job_dir)
     if stage == "transcribe":
         return state
-    return build_scenes(job_dir)
+    state = build_scenes(job_dir)
+    if stage == "scenes":
+        return state
+    return build_characters(job_dir)
 
 
 def _validate_stage(stage: str) -> None:
-    if stage not in {"ingest", "transcribe", "scenes"}:
-        raise ValueError("Only --stage ingest, transcribe, or scenes is implemented in Phase 3")
+    if stage not in {"ingest", "transcribe", "scenes", "characters"}:
+        raise ValueError("Only --stage ingest, transcribe, scenes, or characters exists in Phase 4")
 
 
 def run_job(
@@ -70,9 +74,9 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "scenes",
+    stage: str = "characters",
 ) -> JobState:
-    """Create a new job and run through scene alignment, or stop at an earlier stage."""
+    """Create a job through character preparation, or stop at an earlier stage."""
     _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
@@ -83,6 +87,8 @@ def run_job(
         whisper_compute=settings.whisper_compute,
         detector_threshold=settings.detector_threshold,
         min_scene_seconds=settings.min_scene_seconds,
+        max_characters=settings.max_characters,
+        sbert_model=settings.sbert_model,
         zip_path=zip_path.resolve(),
         name=name,
     )
@@ -98,7 +104,7 @@ def run_job(
 
 
 def resume_job(
-    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "scenes"
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "characters"
 ) -> JobState:
     """Resume through the requested stage, using checkpoints and persisted model settings."""
     _validate_stage(stage)
