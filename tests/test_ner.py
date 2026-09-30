@@ -195,10 +195,10 @@ def test_character_stage_writes_contracts_and_preserves_other_scene_fields(
     scene_job: JobState,
     nlp: _Pipeline,
 ) -> None:
-    """Default resume builds characters and enriches scenes while leaving scoring unfinished."""
+    """An explicit character stop enriches scenes and leaves scoring unfinished."""
     directory = Path("data/jobs") / scene_job.job_id
     before = read_json(directory / "scenes.json", ScenesDoc).root
-    result = resume_job(scene_job.job_id)
+    result = resume_job(scene_job.job_id, stage="characters")
     assert result.stages.nlp.status == "in_progress"
     assert result.stages.nlp.characters.status == "done"
     assert result.stages.nlp.characters.completed == ["E01", "E02"]
@@ -230,7 +230,7 @@ def test_mid_season_failure_resumes_only_unfinished_episodes_with_saved_cap(
 
     monkeypatch.setattr(ner, "extract_mentions", fail_second)
     with pytest.raises(RuntimeError, match="NER failure"):
-        resume_job(scene_job.job_id)
+        resume_job(scene_job.job_id, stage="characters")
     failed = get_status(scene_job.job_id)
     assert failed.stages.nlp.status == failed.stages.nlp.characters.status == "failed"
     assert failed.stages.nlp.characters.completed == ["E01"]
@@ -239,7 +239,7 @@ def test_mid_season_failure_resumes_only_unfinished_episodes_with_saved_cap(
     nlp.sentences.clear()
     monkeypatch.setattr(ner, "extract_mentions", extract)
     monkeypatch.setenv("MAX_CHARACTERS", "12")
-    result = resume_job(scene_job.job_id)
+    result = resume_job(scene_job.job_id, stage="characters")
     assert result.stages.nlp.characters.status == "done"
     assert len(nlp.sentences) == 2
     assert len(result.errors) == 1
@@ -262,13 +262,13 @@ def test_final_write_failure_reuses_all_episode_caches(
 
     monkeypatch.setattr(ner, "write_json", fail_scenes)
     with pytest.raises(OSError, match="scene write failure"):
-        resume_job(scene_job.job_id)
+        resume_job(scene_job.job_id, stage="characters")
     failed = get_status(scene_job.job_id)
     assert failed.stages.nlp.characters.completed == ["E01", "E02"]
     assert failed.errors[-1].episode is None
     nlp.sentences.clear()
     monkeypatch.setattr(ner, "write_json", persist)
-    assert resume_job(scene_job.job_id).stages.nlp.characters.status == "done"
+    assert resume_job(scene_job.job_id, stage="characters").stages.nlp.characters.status == "done"
     assert nlp.sentences == []
 
 
@@ -279,7 +279,7 @@ def test_unfinished_character_stage_repairs_damaged_episode_cache(
     damage: str,
 ) -> None:
     """Resume validates previously checkpointed files before skipping expensive extraction."""
-    completed = resume_job(scene_job.job_id)
+    completed = resume_job(scene_job.job_id, stage="characters")
     directory = Path("data/jobs") / scene_job.job_id
     completed.stages.nlp.characters.status = "in_progress"
     write_json(directory / "state.json", completed)
@@ -291,7 +291,7 @@ def test_unfinished_character_stage_repairs_damaged_episode_cache(
     else:
         write_json(path, _mentions("E02", Wrong=1))
     nlp.sentences.clear()
-    assert resume_job(scene_job.job_id).stages.nlp.characters.status == "done"
+    assert resume_job(scene_job.job_id, stage="characters").stages.nlp.characters.status == "done"
     assert len(nlp.sentences) == 2
     assert read_json(path, CharacterMentionsDoc).episode == "E01"
 
@@ -301,24 +301,24 @@ def test_wrong_transcript_episode_records_failure(scene_job: JobState) -> None:
     directory = Path("data/jobs") / scene_job.job_id
     write_json(directory / "transcripts/E01.transcript.json", _transcript("E02", "Wrong."))
     with pytest.raises(ValueError, match="identifier must match E01"):
-        resume_job(scene_job.job_id)
+        resume_job(scene_job.job_id, stage="characters")
     failed = get_status(scene_job.job_id)
     assert failed.errors[-1].episode == "E01"
     assert failed.stages.nlp.characters.completed == []
 
 
-def test_cli_default_stop_and_completed_preparation_are_idempotent(
+def test_cli_character_stop_and_completed_preparation_are_idempotent(
     scene_job: JobState,
     nlp: _Pipeline,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default CLI resume reaches Phase 4, then a second resume leaves all artifacts untouched."""
-    assert main(["resume", "--job", scene_job.job_id]) == 0
+    """An explicit CLI character stop is idempotent and leaves scoring pending."""
+    assert main(["resume", "--job", scene_job.job_id, "--stage", "characters"]) == 0
     assert "characters done" in capsys.readouterr().out
     directory = Path("data/jobs") / scene_job.job_id
     paths = [directory / name for name in ("state.json", "scenes.json", "characters.json")]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     nlp.sentences.clear()
-    assert main(["resume", "--job", scene_job.job_id]) == 0
+    assert main(["resume", "--job", scene_job.job_id, "--stage", "characters"]) == 0
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert nlp.sentences == []

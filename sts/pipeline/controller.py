@@ -1,4 +1,4 @@
-"""Job management through Phase 4, ending with character preparation."""
+"""Job management through Phase 5, ending with TextRank baseline scoring."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sts.config import Settings
 from sts.nlp.ner import build_characters
+from sts.nlp.scorer_textrank import build_baseline
 from sts.pipeline.ingest import ingest_zip
 from sts.pipeline.scenes import build_scenes
 from sts.pipeline.transcribe import transcribe_job
@@ -59,12 +60,17 @@ def _run_stages(job_dir: Path, stage: str) -> JobState:
     state = build_scenes(job_dir)
     if stage == "scenes":
         return state
-    return build_characters(job_dir)
+    state = build_characters(job_dir)
+    if stage == "characters":
+        return state
+    return build_baseline(job_dir)
 
 
 def _validate_stage(stage: str) -> None:
-    if stage not in {"ingest", "transcribe", "scenes", "characters"}:
-        raise ValueError("Only --stage ingest, transcribe, scenes, or characters exists in Phase 4")
+    if stage not in {"ingest", "transcribe", "scenes", "characters", "baseline"}:
+        raise ValueError(
+            "Only --stage ingest, transcribe, scenes, characters, or baseline exists in Phase 5"
+        )
 
 
 def run_job(
@@ -74,9 +80,9 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "characters",
+    stage: str = "baseline",
 ) -> JobState:
-    """Create a job through character preparation, or stop at an earlier stage."""
+    """Create a job through baseline scoring, or stop at an earlier stage."""
     _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
@@ -104,7 +110,7 @@ def run_job(
 
 
 def resume_job(
-    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "characters"
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "baseline"
 ) -> JobState:
     """Resume through the requested stage, using checkpoints and persisted model settings."""
     _validate_stage(stage)

@@ -208,6 +208,47 @@ Phase 4 contract additions and clarifications (existing keys are unchanged):
   `pytest tests/test_nlp_smoke.py --run-model-smoke -s`; it exercises real PERSON
   extraction, character artifacts, normalized embeddings, and singleton reuse.
 
+Phase 5 contract additions and clarifications (existing keys are unchanged):
+
+- `state.stages.nlp.baseline` adds `status`, `completed`, and `pending`. Episode
+  lists track embedding checkpoints. The substage becomes `done` only after the
+  season-wide graph has been ranked and `scores.json` has been committed. Overall
+  NLP remains `in_progress` until Phase 6 supplies LLM scoring. Baseline failures
+  record an `nlp` error; graph/publication failures omit the episode.
+- Each episode has `transcripts/E##.embeddings.json`, a SceneEmbeddingsDoc:
+  {"episode":"E01","model_name":"all-MiniLM-L6-v2","input_sha256":"<64 hex characters>",
+  "embeddings":[{"scene_id":"E01_s0001","vector":[0.6,0.8]}]}.
+  The example vector is illustrative; its actual length comes from the model.
+  Each vector is finite and unit length, IDs are unique and belong to the episode,
+  and dimensions must agree. Blank cleaned dialogue has no embedding record.
+- `input_sha256` hashes the ordered `[scene_id, cleaned_text]` pairs for every
+  scene in that episode, encoded as compact UTF-8 JSON with `ensure_ascii=False`.
+  An unfinished baseline validates the model name, hash, scene IDs, and vector
+  contract before reusing a checkpoint. Missing, changed, or invalid episode
+  caches are regenerated. A stage already marked `done` is skipped.
+- Baseline uses the job's saved `sbert_model`. It cleans dialogue using Phase 4's
+  preprocessing and embeds one episode at a time. The cache file is committed
+  before its state checkpoint. A graph/publication failure reuses all completed
+  embeddings on resume; graph ranking and score publication are one final unit.
+- TextRank uses one undirected graph across the season, including silent/isolated
+  scenes. Edges have cosine similarity as their weight and exist only for distinct
+  scene pairs with similarity strictly above 0.2. PageRank uses alpha 0.85,
+  tolerance 1e-10, and a maximum of 1000 iterations; convergence failure is recorded
+  and re-raised. Similarities are computed one row at a time to avoid an extra
+  full season-by-season matrix allocation.
+- PageRank values are min-max normalized to [0,1]. When the range is at most
+  1e-12, all baseline scores are 0.0. This covers a singleton, an all-silent season,
+  and other uniform graphs. Silent scenes remain eligible for later non-textual
+  scoring and selection. Empty input to `score_scenes` returns an empty mapping;
+  duplicate IDs are rejected. A saved job requires scenes for every manifest episode.
+- `scores.json` has one ScoreRecord for every scene, preserving `scenes.json` order.
+  It includes `scene_id`, `baseline_score`, and `final_score: 0.0`. LLM fields are
+  omitted until Phase 6; weighted final scoring remains Phase 7. Scene records are
+  unchanged by baseline scoring.
+- `run` and `resume` now default to `--stage baseline`. Explicit earlier stops,
+  including `--stage characters`, remain supported. Selection and rendering remain
+  pending. The opt-in NLP smoke test now verifies real MiniLM-to-TextRank output too.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

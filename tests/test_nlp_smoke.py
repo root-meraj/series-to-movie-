@@ -1,4 +1,4 @@
-"""Opt-in smoke test for installed spaCy NER and the cached MiniLM embedding model."""
+"""Opt-in smoke test for real character extraction, cached embeddings, and TextRank output."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from sts.nlp import embeddings, ner
+from sts.nlp import embeddings, ner, scorer_textrank
 from sts.schemas import (
     CharacterTable,
     EpisodeInfo,
     JobState,
     SceneRecord,
     ScenesDoc,
+    ScoresDoc,
     TranscriptDoc,
     TranscriptSegment,
     read_json,
@@ -22,8 +23,8 @@ from sts.schemas import (
 
 
 @pytest.mark.integration
-def test_real_character_artifacts_and_cached_normalized_embeddings(tmp_path: Path) -> None:
-    """Produce character contracts from synthetic dialogue and reuse both trained models."""
+def test_real_character_artifacts_cached_embeddings_and_baseline_scores(tmp_path: Path) -> None:
+    """Produce character and score contracts from synthetic dialogue using cached models."""
     directory = tmp_path / "nlp-smoke"
     text = "Barack Obama met Angela Merkel in Berlin. Barack Obama spoke to Angela Merkel."
     episode = EpisodeInfo(
@@ -49,17 +50,18 @@ def test_real_character_artifacts_and_cached_normalized_embeddings(tmp_path: Pat
         ScenesDoc(
             [
                 SceneRecord(
-                    scene_id="E01_s0001",
+                    scene_id=f"E01_s{index:04d}",
                     episode="E01",
                     source_path=episode.source_path,
-                    start=0,
-                    end=90,
-                    duration=90,
+                    start=(index - 1) * 30,
+                    end=index * 30,
+                    duration=30,
                     episode_number=1,
-                    transcript=text,
-                    is_first=True,
-                    is_last=True,
+                    transcript=dialogue,
+                    is_first=index == 1,
+                    is_last=index == 3,
                 )
+                for index, dialogue in enumerate([text, "The two leaders held a meeting.", ""], 1)
             ]
         ),
     )
@@ -82,3 +84,12 @@ def test_real_character_artifacts_and_cached_normalized_embeddings(tmp_path: Pat
     again = embeddings.embed([text])
     assert embeddings._MODEL is embedding_cache
     np.testing.assert_allclose(again[0], vectors[0], atol=1e-6)
+
+    completed = scorer_textrank.build_baseline(directory)
+    assert completed.stages.nlp.baseline.status == "done"
+    assert embeddings._MODEL is embedding_cache
+    scores = read_json(directory / "scores.json", ScoresDoc).root
+    assert [score.scene_id for score in scores] == ["E01_s0001", "E01_s0002", "E01_s0003"]
+    assert scores[0].baseline_score == scores[1].baseline_score == 1.0
+    assert scores[2].baseline_score == 0.0
+    assert all(score.llm_score is None for score in scores)

@@ -5,9 +5,9 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 4 adds text cleanup, character extraction and alias merging, and a cached
-embedding wrapper. Runs stop after producing `characters.json` and adding character
-mentions to `scenes.json`. NLP scoring, selection, and rendering remain placeholders.
+Phase 5 adds season-wide TextRank scoring with resumable embedding checkpoints.
+Runs stop after producing `scores.json`, with a baseline score for every scene.
+LLM scoring, selection, and rendering remain placeholders.
 
 ## Development setup
 
@@ -23,6 +23,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install faster-whisper numpy soundfile
 .\.venv\Scripts\python.exe -m pip install "scenedetect[opencv]"
 .\.venv\Scripts\python.exe -m pip install spacy rapidfuzz sentence-transformers
+.\.venv\Scripts\python.exe -m pip install networkx
 .\.venv\Scripts\python.exe -m spacy download en_core_web_sm
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe scripts/make_fixture.py
@@ -31,7 +32,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 4. Install the complete
+These dependencies are sufficient through Phase 5. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -46,7 +47,7 @@ spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
 
-## Process a season through character preparation
+## Process a season through baseline scoring
 
 ```powershell
 .\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 2 --name "Fixture Show"
@@ -58,11 +59,11 @@ Both trained NLP models are loaded lazily and reused within a process.
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
-Both `run` and `resume` default to `--stage characters`. To stop earlier, pass
-`--stage ingest`, `--stage transcribe`, or `--stage scenes` to either command.
-The job list shows progress through character preparation. The overall NLP status
-remains `in_progress` after character preparation finishes because the scoring
-phases have not been implemented yet.
+Both `run` and `resume` default to `--stage baseline`. To stop earlier, pass
+`--stage ingest`, `--stage transcribe`, `--stage scenes`, or `--stage characters`.
+The job list shows progress through baseline scoring. The overall NLP status
+remains `in_progress` after baseline finishes because LLM scoring has not been
+implemented yet.
 
 The fixture becomes `E01.mp4` (show.S01E01), `E02.mkv` (show_1x02), and `E03.mp4`
 (ep10). Nested ZIP folders are supported, and original container extensions are
@@ -119,8 +120,26 @@ fixture correctly produces an empty character table.
 
 The embedding wrapper returns normalized float32 vectors and reuses its model
 across calls. Blank dialogue receives a zero vector; an empty list returns an
-empty `(0, 0)` array without loading a model. Scoring will use these embeddings
-in later phases.
+empty `(0, 0)` array without loading a model.
+
+Baseline scoring checkpoints scene embeddings one episode at a time in
+`transcripts/E##.embeddings.json`, using the saved `SBERT_MODEL`. Blank dialogue
+does not require embedding inference. Resume checks the cache against its model,
+scene IDs, cleaned text hash, and vector schema before reusing completed episodes.
+If graph computation or score publication fails, the saved embeddings avoid
+repeating model inference on restart.
+
+TextRank builds one weighted graph across the season, connecting distinct scenes
+when their cosine similarity exceeds 0.2. It runs NetworkX PageRank, then min-max
+normalizes the results to `[0, 1]`. Silent scenes remain isolated graph nodes.
+Singletons and uniform rankings receive zeros because text offers no distinction
+between them. The silent fixture therefore correctly receives all-zero baselines.
+These are text-centrality scores; audio and plot importance are added in later phases.
+
+`scores.json` preserves scene order and contains `baseline_score` for every scene.
+`final_score` remains zero until weighted selection, and LLM fields are omitted.
+`state.stages.nlp.baseline.status` becomes `done` only after scores are committed.
+As with earlier stages, a completed baseline is skipped on resume.
 
 ## Fixtures and checks
 
@@ -142,6 +161,9 @@ between writing scene records and updating the checkpoint.
 NLP tests cover speaker cleanup, sentence boundaries, PERSON filtering, alias
 thresholds, season-wide ranking, whole-word scene mentions, checkpoint recovery,
 embedding normalization, silent inputs, and singleton reuse.
+Scoring tests cover weighted graph behavior, the strict similarity threshold,
+cross-episode ranking, uniform/disconnected graphs, cache validation, saved model
+settings, and recovery from inference, graph, and score-checkpoint interruptions.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 
@@ -153,12 +175,13 @@ Real-model integration smoke tests are skipped by default. Run them explicitly:
 The transcription smoke test processes the fixture ZIP with `small` Whisper on CPU/int8
 and retains its job under `data/jobs/`. It may download the model on first use. The
 synthetic sine-wave fixture does not test transcription quality on spoken dialogue.
-The NLP smoke test uses synthetic dialogue to verify real spaCy character output
-and 384-dimensional MiniLM embeddings, including cache reuse. It may download
+The NLP smoke test uses synthetic dialogue to verify real spaCy character output,
+384-dimensional MiniLM embeddings, cache reuse, and baseline score artifacts. It may download
 MiniLM on first use; install the spaCy model during setup first.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 4, episodes, WAV/RMS files, transcripts,
-character checkpoints, `characters.json`, `scenes.json`, and `state.json` are populated.
+`output` directories. Through Phase 5, episodes, WAV/RMS files, transcripts,
+character/embedding checkpoints, `characters.json`, `scenes.json`, `scores.json`,
+and `state.json` are populated.
 No condensed video or subtitles are
 rendered yet.

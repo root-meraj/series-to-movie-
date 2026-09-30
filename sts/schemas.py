@@ -136,6 +136,41 @@ class CharacterMentionsDoc(ContractModel):
     mentions: list[CharacterMention] = Field(default_factory=list)
 
 
+class SceneEmbeddingRecord(ContractModel):
+    """A normalized embedding for a scene with nonblank cleaned dialogue."""
+
+    scene_id: SceneId
+    vector: list[float] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_normalization(self) -> SceneEmbeddingRecord:
+        """Reject invalid cached vectors before they enter the similarity graph."""
+        if not math.isclose(math.hypot(*self.vector), 1.0, abs_tol=1e-5):
+            raise ValueError("Cached scene embeddings must have unit length")
+        return self
+
+
+class SceneEmbeddingsDoc(ContractModel):
+    """The transcripts/E##.embeddings.json checkpoint used by baseline scoring."""
+
+    episode: EpisodeId
+    model_name: str = Field(min_length=1)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    embeddings: list[SceneEmbeddingRecord] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_records(self) -> SceneEmbeddingsDoc:
+        """Require unique scenes from one episode and a consistent vector dimension."""
+        identifiers = [record.scene_id for record in self.embeddings]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Cached embeddings must have unique scene IDs")
+        if any(not identifier.startswith(f"{self.episode}_") for identifier in identifiers):
+            raise ValueError("Cached embeddings must belong to the checkpoint episode")
+        if len({len(record.vector) for record in self.embeddings}) > 1:
+            raise ValueError("Cached embedding dimensions must match")
+        return self
+
+
 class ScoreRecord(ContractModel):
     """Scene scores, with LLM fields omitted until the LLM stage runs."""
 
@@ -245,6 +280,7 @@ class NLPState(StageState):
     """NLP progress; character preparation precedes the later scoring phases."""
 
     characters: EpisodeStageState = Field(default_factory=EpisodeStageState)
+    baseline: EpisodeStageState = Field(default_factory=EpisodeStageState)
 
 
 class JobStages(ContractModel):
