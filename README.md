@@ -5,9 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 5 adds season-wide TextRank scoring with resumable embedding checkpoints.
-Runs stop after producing `scores.json`, with a baseline score for every scene.
-LLM scoring, selection, and rendering remain placeholders.
+Phase 6 adds LLM scene scoring, cumulative episode summaries, and resume after
+each summary or scene response. Runs stop with baseline and LLM scores in
+`scores.json` and cumulative context in `rolling_summary.json`. Selection and
+rendering remain placeholders.
 
 ## Development setup
 
@@ -24,6 +25,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install "scenedetect[opencv]"
 .\.venv\Scripts\python.exe -m pip install spacy rapidfuzz sentence-transformers
 .\.venv\Scripts\python.exe -m pip install networkx
+.\.venv\Scripts\python.exe -m pip install openai
 .\.venv\Scripts\python.exe -m spacy download en_core_web_sm
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe scripts/make_fixture.py
@@ -32,7 +34,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 5. Install the complete
+These dependencies are sufficient through Phase 6. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -47,9 +49,10 @@ spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
 
-## Process a season through baseline scoring
+## Process a season through LLM scoring
 
 ```powershell
+$env:LLM_PROVIDER = "mock"  # Offline fixture scoring; choose before creating a job.
 .\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 2 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
@@ -59,11 +62,24 @@ Both trained NLP models are loaded lazily and reused within a process.
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
-Both `run` and `resume` default to `--stage baseline`. To stop earlier, pass
-`--stage ingest`, `--stage transcribe`, `--stage scenes`, or `--stage characters`.
-The job list shows progress through baseline scoring. The overall NLP status
-remains `in_progress` after baseline finishes because LLM scoring has not been
-implemented yet.
+Both `run` and `resume` default to `--stage llm`. To stop earlier, pass
+`--stage ingest`, `--stage transcribe`, `--stage scenes`, `--stage characters`, or
+`--stage baseline`. The job list shows progress through LLM scoring. Overall NLP
+becomes `done` after the LLM stage; selection and rendering remain pending.
+
+Use `LLM_PROVIDER=mock` for deterministic offline development. Its scores and
+summaries are canned test data. For OpenAI, configure `.env` with
+`LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, `ENABLE_OPENAI=true`, and your
+`OPENAI_API_KEY`. OpenAI is disabled by default; the key is read only from `.env`.
+For Ollama, set `LLM_PROVIDER=ollama`, `LLM_MODEL` to an installed chat model, and
+`OLLAMA_BASE_URL` to the running service (default `http://localhost:11434`).
+`SEASON_NUMBER` defaults to 1 and supplies the editor prompt's season number.
+
+New jobs save their provider, model, endpoint, and season number. Jobs created
+before Phase 6 adopt the current settings on their first LLM run. Later changes
+to `.env` do not switch an existing job's provider; start a new job for a different
+configuration. OpenAI opt-in and credentials are checked at runtime, not persisted
+as authorization. Completed stages and fully cached responses need no new API calls.
 
 The fixture becomes `E01.mp4` (show.S01E01), `E02.mkv` (show_1x02), and `E03.mp4`
 (ep10). Nested ZIP folders are supported, and original container extensions are
@@ -137,9 +153,34 @@ between them. The silent fixture therefore correctly receives all-zero baselines
 These are text-centrality scores; audio and plot importance are added in later phases.
 
 `scores.json` preserves scene order and contains `baseline_score` for every scene.
-`final_score` remains zero until weighted selection, and LLM fields are omitted.
+`final_score` remains zero until weighted selection. LLM fields are initially omitted.
 `state.stages.nlp.baseline.status` becomes `done` only after scores are committed.
 As with earlier stages, a completed baseline is skipped on resume.
+
+LLM scoring first asks for a cumulative summary through the current episode,
+limited to 500 words and 6000 characters. It then scores that episode's scenes
+using the updated story context and main characters. The next episode receives
+the same cumulative context. Scores must be integers from 1 to 10, plot-advance
+flags must be booleans, and reasons must contain 1-15 words. Silent scenes are
+still scored, with missing visual evidence stated in the prompt.
+
+The parser strips Markdown fences and validates responses with Pydantic. Invalid
+JSON, schema violations, and incomplete completions get at most three attempts
+per summary or scene. Transport and authentication failures stop the stage with
+a recorded error. OpenAI uses [Chat Completions JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs);
+Ollama uses the [non-streaming chat API](https://docs.ollama.com/api/chat).
+
+Each accepted response is saved immediately in `transcripts/E##.llm.json` before
+updating `scores.json`, `rolling_summary.json`, and `state.json`. Resume reuses
+valid saved responses, including a response committed just before a crash. Cache
+hashes include the prompt inputs and incoming story context; a changed earlier
+summary invalidates dependent later caches. A call whose response was never
+successfully saved may need repeating. State reports the active episode, whether
+its summary is done, and which scenes are complete.
+
+Completed LLM scoring adds `llm_score`, `llm_plot_advance`, and `llm_reason` while
+preserving baseline values and scene order. `rolling_summary.json` retains the
+cumulative summary after each episode. No weighted final scoring occurs yet.
 
 ## Fixtures and checks
 
@@ -164,6 +205,10 @@ embedding normalization, silent inputs, and singleton reuse.
 Scoring tests cover weighted graph behavior, the strict similarity threshold,
 cross-episode ranking, uniform/disconnected graphs, cache validation, saved model
 settings, and recovery from inference, graph, and score-checkpoint interruptions.
+LLM tests use MockProvider to cover strict JSON types, fenced responses, retry
+limits, episode context, every model-call failure boundary, cache invalidation,
+and crashes between response persistence and state publication. Provider adapter
+tests mock the transports; no test makes an external LLM request.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 
@@ -180,8 +225,8 @@ The NLP smoke test uses synthetic dialogue to verify real spaCy character output
 MiniLM on first use; install the spaCy model during setup first.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 5, episodes, WAV/RMS files, transcripts,
-character/embedding checkpoints, `characters.json`, `scenes.json`, `scores.json`,
-and `state.json` are populated.
+`output` directories. Through Phase 6, episodes, WAV/RMS files, transcripts,
+character/embedding/LLM checkpoints, `characters.json`, `scenes.json`, `scores.json`,
+`rolling_summary.json`, and `state.json` are populated.
 No condensed video or subtitles are
 rendered yet.

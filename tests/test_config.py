@@ -21,6 +21,8 @@ def test_defaults_match_specification() -> None:
     assert settings.score_weights == (0.5, 0.3, 0.1, 0.1)
     assert settings.max_characters == 12
     assert settings.openai_api_key.get_secret_value() == ""
+    assert settings.enable_openai is False
+    assert settings.season_number == 1
 
 
 def test_dotenv_and_nonsecret_environment_precedence(
@@ -59,6 +61,10 @@ def test_secret_only_comes_from_dotenv_and_is_not_serialized(
         "MIN_CLIP_SECONDS=-1",
         "WHISPER_DEVICE=bogus",
         "LLM_PROVIDER=bogus",
+        "ENABLE_OPENAI=bogus",
+        "SEASON_NUMBER=0",
+        "OLLAMA_BASE_URL=file:///tmp/model",
+        "OLLAMA_BASE_URL=http://user:password@localhost:11434",
         "MAX_CHARACTERS=0",
         "SCORE_WEIGHTS=0,0,0,0",
         "SCORE_WEIGHTS=1,2,3",

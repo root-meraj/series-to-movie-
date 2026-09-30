@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from sts.config import Settings
-from sts.nlp import embeddings, ner
+from sts.nlp import embeddings, ner, scorer_llm
 from sts.pipeline import transcribe
 
 
@@ -25,6 +25,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         for item in items:
             if item.get_closest_marker("integration"):
                 item.add_marker(pytest.mark.skip(reason="use --run-model-smoke for trained models"))
+
+
+@pytest.fixture(autouse=True)
+def prevent_real_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Block every external LLM transport, including during opt-in local-model smoke tests."""
+
+    def fail_transport(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Tests must use MockProvider; external LLM requests are forbidden")
+
+    monkeypatch.setattr(scorer_llm, "_create_openai_client", fail_transport)
+    monkeypatch.setattr(scorer_llm, "_post_ollama", fail_transport)
 
 
 @pytest.fixture(autouse=True)

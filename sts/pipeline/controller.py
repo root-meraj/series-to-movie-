@@ -1,4 +1,4 @@
-"""Job management through Phase 5, ending with TextRank baseline scoring."""
+"""Job management through Phase 6, ending with context-aware LLM scoring."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sts.config import Settings
 from sts.nlp.ner import build_characters
+from sts.nlp.scorer_llm import build_llm
 from sts.nlp.scorer_textrank import build_baseline
 from sts.pipeline.ingest import ingest_zip
 from sts.pipeline.scenes import build_scenes
@@ -63,13 +64,16 @@ def _run_stages(job_dir: Path, stage: str) -> JobState:
     state = build_characters(job_dir)
     if stage == "characters":
         return state
-    return build_baseline(job_dir)
+    state = build_baseline(job_dir)
+    if stage == "baseline":
+        return state
+    return build_llm(job_dir)
 
 
 def _validate_stage(stage: str) -> None:
-    if stage not in {"ingest", "transcribe", "scenes", "characters", "baseline"}:
+    if stage not in {"ingest", "transcribe", "scenes", "characters", "baseline", "llm"}:
         raise ValueError(
-            "Only --stage ingest, transcribe, scenes, characters, or baseline exists in Phase 5"
+            "Only --stage ingest, transcribe, scenes, characters, baseline, or llm is available"
         )
 
 
@@ -80,9 +84,9 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "baseline",
+    stage: str = "llm",
 ) -> JobState:
-    """Create a job through baseline scoring, or stop at an earlier stage."""
+    """Create a job through LLM scoring, or stop at an earlier stage."""
     _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
@@ -95,6 +99,10 @@ def run_job(
         min_scene_seconds=settings.min_scene_seconds,
         max_characters=settings.max_characters,
         sbert_model=settings.sbert_model,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model,
+        ollama_base_url=settings.ollama_base_url,
+        season_number=settings.season_number,
         zip_path=zip_path.resolve(),
         name=name,
     )
@@ -110,7 +118,7 @@ def run_job(
 
 
 def resume_job(
-    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "baseline"
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "llm"
 ) -> JobState:
     """Resume through the requested stage, using checkpoints and persisted model settings."""
     _validate_stage(stage)

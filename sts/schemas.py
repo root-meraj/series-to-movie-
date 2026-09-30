@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 Seconds = Annotated[float, Field(ge=0)]
 UnitScore = Annotated[float, Field(ge=0, le=1)]
@@ -193,6 +193,79 @@ class ScoresDoc(RootModel[list[ScoreRecord]]):
     """The scores.json top-level array."""
 
 
+class LLMSceneResponse(ContractModel):
+    """Strict provider response for one scene; no coercion of strings or booleans to scores."""
+
+    score: int = Field(ge=1, le=10, strict=True)
+    plot_advance: bool = Field(strict=True)
+    reason: str = Field(min_length=1, max_length=1000, strict=True)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        """Require a meaningful explanation within the specified 15-word limit."""
+        cleaned = " ".join(value.split())
+        if not cleaned or len(cleaned.split()) > 15:
+            raise ValueError("reason must contain between 1 and 15 words")
+        return cleaned
+
+
+class SummaryResponse(ContractModel):
+    """A bounded cumulative story summary returned by the provider."""
+
+    summary: str = Field(min_length=1, max_length=6000, strict=True)
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        """Keep rolling context nonempty and within 500 words."""
+        cleaned = " ".join(value.split())
+        if not cleaned or len(cleaned.split()) > 500:
+            raise ValueError("summary must contain between 1 and 500 words")
+        return cleaned
+
+
+class LLMSceneRecord(LLMSceneResponse):
+    """A validated scene response with its identity for durable checkpoints."""
+
+    scene_id: SceneId
+
+
+class EpisodeLLMDoc(ContractModel):
+    """The transcripts/E##.llm.json checkpoint, saved after each successful model response."""
+
+    episode: EpisodeId
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    summary: str | None = None
+    scores: list[LLMSceneRecord] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_checkpoint(self) -> EpisodeLLMDoc:
+        """Require a validated summary before scores and unique scene IDs from this episode."""
+        if self.summary is not None:
+            SummaryResponse(summary=self.summary)
+        if self.scores and self.summary is None:
+            raise ValueError("Scene scores require an episode summary")
+        identifiers = [score.scene_id for score in self.scores]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("LLM checkpoints require unique scene IDs")
+        if any(not identifier.startswith(f"{self.episode}_") for identifier in identifiers):
+            raise ValueError("LLM scores must belong to their checkpoint episode")
+        return self
+
+
+class EpisodeSummaryRecord(SummaryResponse):
+    """The cumulative story context after one episode."""
+
+    episode: EpisodeId
+
+
+class RollingSummaryDoc(ContractModel):
+    """The rolling_summary.json artifact, in chronological episode order."""
+
+    episodes: list[EpisodeSummaryRecord] = Field(default_factory=list)
+
+
 class SelectedClip(TimedRange):
     """An interval selected for the condensed movie."""
 
@@ -251,6 +324,10 @@ class JobParams(ContractModel):
     min_scene_seconds: float = Field(default=5.0, gt=0)
     max_characters: int = Field(default=12, gt=0)
     sbert_model: str = Field(default="all-MiniLM-L6-v2", min_length=1)
+    llm_provider: Literal["openai", "ollama", "mock"] | None = None
+    llm_model: str | None = Field(default=None, min_length=1)
+    ollama_base_url: str | None = None
+    season_number: int = Field(default=1, ge=1)
     zip_path: Path | None = None
     zip_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     name: str | None = None
@@ -276,11 +353,20 @@ class IngestState(EpisodeStageState):
     episodes: list[EpisodeInfo] = Field(default_factory=list)
 
 
+class LLMStageState(EpisodeStageState):
+    """Completed episodes plus progress through the active episode's summary and scene calls."""
+
+    active_episode: EpisodeId | None = None
+    summary_done: bool = False
+    completed_scenes: list[SceneId] = Field(default_factory=list)
+
+
 class NLPState(StageState):
     """NLP progress; character preparation precedes the later scoring phases."""
 
     characters: EpisodeStageState = Field(default_factory=EpisodeStageState)
     baseline: EpisodeStageState = Field(default_factory=EpisodeStageState)
+    llm: LLMStageState = Field(default_factory=LLMStageState)
 
 
 class JobStages(ContractModel):

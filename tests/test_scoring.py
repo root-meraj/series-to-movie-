@@ -191,7 +191,7 @@ def test_baseline_writes_one_score_per_scene_and_leaves_future_phases_pending(
     """The season graph connects episodes and writes baseline-only score records in scene order."""
     directory = Path("data/jobs") / character_job.job_id
     scenes_before = (directory / "scenes.json").read_bytes()
-    state = resume_job(character_job.job_id)
+    state = resume_job(character_job.job_id, stage="baseline")
     records = read_json(directory / "scores.json", ScoresDoc).root
     assert [record.scene_id for record in records] == [
         "E01_s0001",
@@ -227,7 +227,7 @@ def test_episode_embedding_failure_resumes_with_saved_model(
 
     monkeypatch.setattr(baseline, "embed", fail_second)
     with pytest.raises(RuntimeError, match="embedding failure"):
-        resume_job(character_job.job_id)
+        resume_job(character_job.job_id, stage="baseline")
     failed = get_status(character_job.job_id)
     assert failed.stages.nlp.baseline.completed == ["E01"]
     assert failed.stages.nlp.baseline.pending == ["E02"]
@@ -236,7 +236,7 @@ def test_episode_embedding_failure_resumes_with_saved_model(
     embedding_calls.clear()
     monkeypatch.setattr(baseline, "embed", embed)
     monkeypatch.setenv("SBERT_MODEL", "different-environment-model")
-    state = resume_job(character_job.job_id)
+    state = resume_job(character_job.job_id, stage="baseline")
     assert state.stages.nlp.baseline.status == "done"
     assert len(state.errors) == 1
     assert embedding_calls == [(["right"], "saved-model")]
@@ -249,7 +249,7 @@ def test_unfinished_baseline_repairs_only_invalid_embedding_cache(
     damage: str,
 ) -> None:
     """Checkpoint validation prevents stale, missing, or malformed embeddings from being reused."""
-    state = resume_job(character_job.job_id)
+    state = resume_job(character_job.job_id, stage="baseline")
     directory = Path("data/jobs") / state.job_id
     state.stages.nlp.baseline.status = "in_progress"
     write_json(directory / "state.json", state)
@@ -270,7 +270,7 @@ def test_unfinished_baseline_repairs_only_invalid_embedding_cache(
             document["embeddings"][0]["vector"] = [0, 0]
         path.write_text(json.dumps(document), encoding="utf-8")
     embedding_calls.clear()
-    assert resume_job(state.job_id).stages.nlp.baseline.status == "done"
+    assert resume_job(state.job_id, stage="baseline").stages.nlp.baseline.status == "done"
     assert embedding_calls == [(["bridge", "left"], "saved-model")]
 
 
@@ -279,7 +279,7 @@ def test_changed_dialogue_invalidates_only_its_episode_cache(
     embedding_calls: list[tuple[list[str], str | None]],
 ) -> None:
     """A valid JSON checkpoint still needs to match the current scene IDs and cleaned text."""
-    state = resume_job(character_job.job_id)
+    state = resume_job(character_job.job_id, stage="baseline")
     directory = Path("data/jobs") / state.job_id
     state.stages.nlp.baseline.status = "in_progress"
     write_json(directory / "state.json", state)
@@ -287,7 +287,7 @@ def test_changed_dialogue_invalidates_only_its_episode_cache(
     scenes.root[0].transcript = "changed"
     write_json(directory / "scenes.json", scenes)
     embedding_calls.clear()
-    assert resume_job(state.job_id).stages.nlp.baseline.status == "done"
+    assert resume_job(state.job_id, stage="baseline").stages.nlp.baseline.status == "done"
     assert embedding_calls == [(["changed", "left"], "saved-model")]
 
 
@@ -304,14 +304,14 @@ def test_pagerank_failure_reuses_all_embeddings_on_resume(
 
     monkeypatch.setattr(baseline.nx, "pagerank", fail_graph)
     with pytest.raises(nx.PowerIterationFailedConvergence):
-        resume_job(character_job.job_id)
+        resume_job(character_job.job_id, stage="baseline")
     state = get_status(character_job.job_id)
     assert state.stages.nlp.baseline.completed == ["E01", "E02"]
     assert state.errors[-1].episode is None
     assert not (Path("data/jobs") / state.job_id / "scores.json").exists()
     monkeypatch.setattr(baseline.nx, "pagerank", pagerank)
     embedding_calls.clear()
-    assert resume_job(state.job_id).stages.nlp.baseline.status == "done"
+    assert resume_job(state.job_id, stage="baseline").stages.nlp.baseline.status == "done"
     assert embedding_calls == []
 
 
@@ -330,13 +330,13 @@ def test_interrupt_after_score_write_recovers_without_reembedding(
 
     monkeypatch.setattr(baseline, "write_json", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        resume_job(character_job.job_id)
+        resume_job(character_job.job_id, stage="baseline")
     directory = Path("data/jobs") / character_job.job_id
     before = read_json(directory / "scores.json", ScoresDoc)
     assert get_status(character_job.job_id).stages.nlp.baseline.status == "in_progress"
     monkeypatch.setattr(baseline, "write_json", persist)
     embedding_calls.clear()
-    assert resume_job(character_job.job_id).stages.nlp.baseline.status == "done"
+    assert resume_job(character_job.job_id, stage="baseline").stages.nlp.baseline.status == "done"
     assert read_json(directory / "scores.json", ScoresDoc) == before
     assert embedding_calls == []
 
@@ -354,23 +354,23 @@ def test_incomplete_or_duplicate_scenes_fail_before_embedding(
     )
     write_json(directory / "scenes.json", ScenesDoc(scenes))
     with pytest.raises(ValueError):
-        resume_job(character_job.job_id)
+        resume_job(character_job.job_id, stage="baseline")
     assert get_status(character_job.job_id).stages.nlp.baseline.status == "failed"
     assert not (directory / "scores.json").exists()
 
 
-def test_cli_default_baseline_stop_and_completed_stage_are_idempotent(
+def test_cli_baseline_stop_and_completed_stage_are_idempotent(
     character_job: JobState,
     embedding_calls: list[tuple[list[str], str | None]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default CLI resume finishes baseline scoring and skips every completed unit on repeat."""
-    assert main(["resume", "--job", character_job.job_id]) == 0
+    """An explicit CLI baseline stop skips every completed unit on repeat."""
+    assert main(["resume", "--job", character_job.job_id, "--stage", "baseline"]) == 0
     assert "baseline done" in capsys.readouterr().out
     directory = Path("data/jobs") / character_job.job_id
     paths = [directory / name for name in ("state.json", "scenes.json", "scores.json")]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     embedding_calls.clear()
-    assert main(["resume", "--job", character_job.job_id]) == 0
+    assert main(["resume", "--job", character_job.job_id, "--stage", "baseline"]) == 0
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert embedding_calls == []

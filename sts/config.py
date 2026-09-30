@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import (
@@ -31,11 +32,31 @@ class Settings(BaseSettings):
     min_clip_seconds: float = Field(default=15.0, gt=0)
     llm_provider: Literal["openai", "ollama", "mock"] = "openai"
     llm_model: str = Field(default="gpt-4o-mini", min_length=1)
+    enable_openai: bool = False
+    season_number: int = Field(default=1, ge=1)
     ollama_base_url: str = Field(default="http://localhost:11434", min_length=1)
     openai_api_key: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     sbert_model: str = Field(default="all-MiniLM-L6-v2", min_length=1)
     score_weights: Annotated[tuple[float, float, float, float], NoDecode] = (0.5, 0.3, 0.1, 0.1)
     max_characters: int = Field(default=12, gt=0)
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def validate_ollama_url(cls, value: str) -> str:
+        """Require an HTTP endpoint without embedded credentials or URL parameters."""
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "OLLAMA_BASE_URL must be an HTTP(S) URL without credentials or parameters"
+            )
+        return value.rstrip("/")
 
     @classmethod
     def settings_customise_sources(

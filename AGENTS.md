@@ -249,6 +249,68 @@ Phase 5 contract additions and clarifications (existing keys are unchanged):
   including `--stage characters`, remain supported. Selection and rendering remain
   pending. The opt-in NLP smoke test now verifies real MiniLM-to-TextRank output too.
 
+Phase 6 contract additions and clarifications (existing keys are unchanged):
+
+- Config adds `ENABLE_OPENAI=false` and `SEASON_NUMBER=1`. OpenAI client creation
+  requires explicit opt-in and `OPENAI_API_KEY` loaded from `.env`. Opt-in is a
+  runtime setting and is never saved as authorization in job state. Model calls
+  and provider transports exist only in `sts/nlp/scorer_llm.py`.
+- `state.params` adds `llm_provider`, `llm_model`, `ollama_base_url`, and
+  `season_number`. New jobs persist nonsecret settings at creation. Older jobs
+  with an absent/null `llm_provider` adopt current settings once, before their first
+  Phase 6 call. Resume uses saved settings; create a new job to change providers.
+  The Ollama endpoint must be HTTP(S), without embedded credentials or parameters.
+- `state.stages.nlp.llm` stores `status`, completed/pending episode IDs,
+  `active_episode` (omitted when none), `summary_done`, and `completed_scenes` for
+  the active episode. Both LLM and overall NLP become `done` only after all scene
+  responses are validated and published. Failures mark both failed and record an
+  `nlp` error with the active episode when applicable. Error history is retained.
+- Each episode is summarized first, combining previous rolling context with that
+  episode's chronological scene dialogue. The response is strictly
+  {"summary":"cumulative story"}, with 1-500 words and at most 6000 characters.
+  This replaces the current context; the updated summary conditions scene scoring
+  for that episode and the next episode's summary. Silent dialogue is valid and
+  does not establish what happened visually. No transcript is silently truncated.
+- Scene responses use {"score":8,"plot_advance":true,"reason":"Introduces the central conflict"}.
+  Scores must be integers 1-10, booleans must be JSON booleans, and explanations
+  must have 1-15 words. Unknown keys and coercible strings such as "8" are rejected.
+  Markdown fences are stripped. Invalid JSON, schema failures, and incomplete
+  completions allow three total attempts per unit; transport/auth/refusal errors
+  are recorded immediately. Raw invalid responses and provider error bodies are
+  not logged or persisted.
+- `transcripts/E##.llm.json` is an EpisodeLLMDoc:
+  {"episode":"E01","input_sha256":"<64 hex characters>","summary":"Story so far.",
+  "scores":[{"scene_id":"E01_s0001","score":8,"plot_advance":true,"reason":"Central conflict"}]}.
+  Summary is optional until its call succeeds. Scores form a chronological prefix
+  of the episode's unique scene IDs and require a validated summary first.
+- Each validated response is saved to its episode checkpoint before publishing
+  scores, rolling summaries, and state. Resume revalidates caches even if a crash
+  happened before state publication, so a durable response is reused. An API call
+  completed before its response was durably saved can still need repeating.
+- The checkpoint hash covers prompt version, provider/model, Ollama endpoint when
+  used, show/season/runtime, main-character names, incoming summary, and ordered
+  scene IDs/timestamps/dialogue. Changed inputs or invalid caches rebuild that
+  episode. Changed rolling context invalidates subsequent episode caches. While
+  recovering, published LLM scores contain only the revalidated episode prefix;
+  stale later scores are cleared while baseline scores remain intact.
+- `rolling_summary.json` is a RollingSummaryDoc:
+  {"episodes":[{"episode":"E01","summary":"Story through E01."},
+  {"episode":"E02","summary":"Story through E02."}]}.
+  It retains each validated cumulative summary in chronological order, including
+  the active episode once its summary completes.
+- `scores.json` gains `llm_score`, `llm_plot_advance`, and `llm_reason` as calls
+  complete. Every scene retains its original baseline score; `final_score` remains
+  0.0 until Phase 7. Its array order continues to match `scenes.json`.
+- `MockProvider` returns fixed canned summary/score responses and supports scripted
+  responses/errors for tests. Mock output is test data, not an editorial judgment.
+  OpenAI uses the configured Chat Completions model and JSON mode with a 60-second
+  timeout and SDK retries disabled. Ollama uses `/api/chat`, `stream:false`, JSON
+  mode, and a 120-second timeout. Both bound response generation to 2000 tokens.
+- `run` and `resume` now default to `--stage llm`; all earlier stops remain valid.
+  Tests use MockProvider, including mocked provider transport contracts, and block
+  actual external LLM transport even in opt-in local-model smoke tests. Phase 6
+  does not implement selection or rendering.
+
 6\. MODULE SPECS
 
 6.1 ingest.py
