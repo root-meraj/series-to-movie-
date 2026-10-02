@@ -130,17 +130,15 @@ def _validate_stage(stage: str) -> None:
         )
 
 
-def run_job(
+def create_job(
     zip_path: Path,
     target_minutes: float | None = None,
     *,
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "render",
 ) -> JobState:
-    """Create and complete a ZIP-to-movie job, or stop at an explicit earlier stage."""
-    _validate_stage(stage)
+    """Persist a pending job and its parameters without loading models or starting stages."""
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
     params = JobParams(
@@ -169,7 +167,22 @@ def run_job(
     state = JobState(job_id=job_id, params=params)
     write_json(directory / "state.json", state)
     logging.getLogger(__name__).info("Created job %s", job_id)
-    return _run_stages(directory, stage)
+    return state
+
+
+def run_job(
+    zip_path: Path,
+    target_minutes: float | None = None,
+    *,
+    name: str | None = None,
+    jobs_dir: Path = Path("data/jobs"),
+    cfg: Settings | None = None,
+    stage: str = "render",
+) -> JobState:
+    """Create and complete a ZIP-to-movie job, or stop at an explicit earlier stage."""
+    _validate_stage(stage)
+    state = create_job(zip_path, target_minutes, name=name, jobs_dir=jobs_dir, cfg=cfg)
+    return _run_stages(_job_dir(state.job_id, jobs_dir), stage)
 
 
 def resume_job(

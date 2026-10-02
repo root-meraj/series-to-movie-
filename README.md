@@ -5,10 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 9 connects every pipeline stage. `run` and `resume` now continue through
-rendering by default, producing `output/condensed_movie.mp4` and
-`output/condensed.srt`. Explicit stage stops remain available. The Streamlit UI
-and evaluation scripts are reserved for the following phases.
+Phase 10 adds a Streamlit editing workspace with ZIP upload, background processing,
+live stage progress, saved projects, movie preview, and film/subtitle downloads.
+The CLI still runs the complete pipeline, with explicit stage stops available.
+Evaluation scripts remain for Phase 11.
 
 ## Development setup
 
@@ -26,6 +26,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install spacy rapidfuzz sentence-transformers
 .\.venv\Scripts\python.exe -m pip install networkx
 .\.venv\Scripts\python.exe -m pip install openai
+.\.venv\Scripts\python.exe -m pip install "streamlit>=1.64,<2"
 .\.venv\Scripts\python.exe -m spacy download en_core_web_sm
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe scripts/make_fixture.py
@@ -34,7 +35,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 9. Install the complete
+These dependencies are sufficient through Phase 10. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -48,6 +49,48 @@ For CPU execution, set `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE=int8` in `.env`
 spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
+
+## The editing room
+
+Start the website from this directory:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run sts/app/ui.py
+```
+
+Open `http://127.0.0.1:8501`. The interface uses a dark cinematic palette, warm
+gold accents, responsive layouts, and native accessible controls. Upload a season
+ZIP, name the project, set a maximum runtime, choose an editorial engine, and
+select **Create my film**. The finished workspace includes a video preview and
+separate MP4/SRT downloads. Silent scenes can produce a valid empty subtitle file.
+
+Preview mode uses MockProvider's sample scores and needs no external LLM service.
+OpenAI story-aware editing requires `ENABLE_OPENAI=true` and an API key in `.env`;
+Ollama uses the configured local endpoint and the model chosen in advanced settings.
+Cloud editing sends dialogue to the configured provider. Source videos remain in
+this workspace. Credentials are never entered in the browser or saved in job state.
+
+Advanced settings select CPU, automatic device detection, or CUDA. The UI defaults
+to CPU/int8 unless CUDA was explicitly configured, avoiding a dependency on GPU
+runtime libraries. This setting is saved with each new project. CLI defaults are
+unchanged. Trained models load only when their stage needs them and are retained
+with bounded `st.cache_resource` caches; opening the page does not load weights.
+
+Uploads are accepted up to 2 GB. Streamlit buffers the upload, then the application
+copies it in chunks to the job's durable `input/source.zip` before starting work.
+For larger seasons, use the CLI. Invalid ZIP uploads do not publish partial jobs.
+
+One background worker serves all browser sessions in this local server, preventing
+overlapping model work and duplicate job launches. Stage progress is read from
+`state.json` every two seconds while processing. Closing or refreshing the browser
+does not stop the worker; reopening a saved project restores its status. After a
+server restart, unfinished projects offer **Resume edit** from saved checkpoints.
+Keep the Streamlit server running until processing completes. Avoid running a CLI
+writer against the same active job.
+
+Film downloads are prepared on click, so progress refreshes do not repeatedly load
+the whole movie into memory. The provided configuration binds to loopback for a
+local workspace. This phase does not add multi-user authentication or deployment.
 
 ## Process a season into a movie
 
@@ -298,6 +341,11 @@ Controller integration tests exercise the actual stages and JSON persistence
 with deterministic model/media doubles and MockProvider. They cover each explicit
 stop, default full execution, saved settings, interrupted units, repeated failures
 before stage error handlers, and completed resume after deleting the source ZIP.
+Streamlit AppTest cases exercise native uploads, form settings, saved-project
+navigation, progress refresh, failure/reconnect/resume, preview, and deferred
+downloads without models or external API requests. Runner tests cover durable
+uploads, atomic publication, duplicate launches, and worker recovery. Resource-cache
+tests verify lazy loading, cache identity, replacement, and constructor failures.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 

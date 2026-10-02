@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from sts.app import model_cache
 from sts.config import Settings
 from sts.nlp import embeddings, ner, scorer_llm
 from sts.pipeline import transcribe
@@ -59,6 +60,9 @@ def prevent_real_models(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     monkeypatch.setattr(ner, "_create_nlp", fail_ner)
     monkeypatch.setattr(embeddings, "_MODEL", None)
     monkeypatch.setattr(embeddings, "_create_model", fail_embedding)
+    monkeypatch.setattr(model_cache, "_WHISPER_FACTORY", fail_model)
+    monkeypatch.setattr(model_cache, "_NER_FACTORY", fail_ner)
+    monkeypatch.setattr(model_cache, "_SBERT_FACTORY", fail_embedding)
 
 
 @pytest.fixture(autouse=True)

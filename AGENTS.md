@@ -440,6 +440,47 @@ Phase 9 orchestration clarifications (existing JSON keys are unchanged):
 - Phase 9 ends with controller, CLI, and smoke verification. Streamlit and
   evaluation remain Phases 10 and 11.
 
+Phase 10 UI clarifications (existing JSON keys are unchanged):
+
+- `sts/app/ui.py` is launched with `streamlit run sts/app/ui.py` from the project
+  directory. `.streamlit/config.toml` supplies the dark theme, loopback binding,
+  and 2 GB upload limit. Native Streamlit widgets remain keyboard accessible;
+  responsive styling collapses the sidebar on narrow screens. No authentication,
+  website hosting, or evaluation scripts are part of this phase.
+- `controller.create_job(...) -> JobState` persists a pending job without running
+  stages. `run_job` reuses it and retains the Phase 9 behavior. `sts/app/runner.py`
+  serializes UI pipeline work in one background worker, shared through
+  `st.cache_resource`, and prevents duplicate/concurrent launches. Worker code
+  calls no Streamlit widgets or session APIs.
+- Uploaded ZIPs are streamed in chunks to a temporary staging directory beside
+  jobs_dir. Valid ZIP structure, pending state, and `input/source.zip` are published
+  together by atomic directory replacement. Browser filenames never determine
+  disk paths. The existing `state.params.zip_path` points at the durable input.
+  Ingestion retains responsibility for entry-path and media validation.
+- New projects expose a name, maximum runtime, editorial provider, optional model,
+  and processing-device setting. Preview uses MockProvider and is labeled as sample
+  scoring. OpenAI requires existing .env authorization/credentials. UI CPU/int8 is
+  the reliable default unless CUDA was explicitly configured; users may select
+  automatic or CUDA. Saved parameters govern resume; CLI defaults are unchanged.
+- The UI reads existing JobState checkpoints every two seconds while its shared
+  runner is busy. Stage bars reflect completed units and NLP substages; overall
+  progress reaches 100% only when rendering is done. Browser disconnects leave work
+  running. Server restarts show unfinished projects as resumable. Retained error
+  history does not make a successfully completed project appear failed.
+- `sts/app/model_cache.py` adds lazy, bounded st.cache_resource adapters for model
+  constructors. Whisper keys contain model/device/compute, SBERT keys contain its
+  model name, and spaCy has one resource. Importing the module does not install
+  adapters or load weights; the cached UI runner installs them once. CLI processes
+  retain their existing singleton behavior. Unit-test guards cover these adapters.
+- Completed projects show st.video and deferred st.download_button exports for
+  MP4 and SRT, without restarting processing on download. Missing artifacts show
+  a recovery message. Empty transcripts produce a clearly explained empty SRT.
+  Names used in custom HTML are escaped, and errors use native text widgets.
+- UI AppTest cases, runner tests, cache tests, and browser checks verify the
+  upload/progress/preview/download flow. Tests use MockProvider/deterministic seams;
+  browser smoke uses synthetic media and local models without external LLM calls.
+  Phase 10 stops before Phase 11 evaluation.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

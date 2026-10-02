@@ -12,7 +12,7 @@ pydantic-settings>=2,<3
 python-dotenv
 tqdm
 rich
-streamlit
+streamlit>=1.64,<2
 rouge-score
 bert-score
 pytest
