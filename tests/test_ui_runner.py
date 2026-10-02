@@ -223,6 +223,8 @@ def test_concurrent_duplicate_starts_launch_one_job_and_other_jobs_are_blocked(
     monkeypatch.setattr(runner_module, "resume_job", resume)
     first = job_runner.create(_upload(), 2)
     second = job_runner.create(_upload(), 2)
+    local_archive = job_runner.jobs_dir.parent / "local.zip"
+    local_archive.write_bytes(_upload().getvalue())
     try:
         with ThreadPoolExecutor(max_workers=8) as clients:
             starts = list(clients.map(lambda _: job_runner.start(first.job_id), range(8)))
@@ -239,6 +241,8 @@ def test_concurrent_duplicate_starts_launch_one_job_and_other_jobs_are_blocked(
             job_runner.start(second.job_id)
         with pytest.raises(RuntimeError, match="already running"):
             job_runner.create(_upload(), 2)
+        with pytest.raises(RuntimeError, match="already running"):
+            job_runner.create_from_path(local_archive, 2)
     finally:
         release.set()
     _wait_idle(job_runner)
@@ -352,3 +356,81 @@ def test_invalid_job_ids_and_shutdown_cannot_schedule_work(job_runner: JobRunner
         job_runner.start("anything")
     with pytest.raises(RuntimeError, match="shut down"):
         job_runner.create(_upload(), 2)
+    with pytest.raises(RuntimeError, match="shut down"):
+        job_runner.create_from_path(Path("anything.zip"), 2)
+
+
+def test_local_archive_creation_resolves_and_persists_source_without_reading_payloads(
+    job_runner: JobRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local ZIPs stay on disk; pending jobs retain absolute source paths without payload copies."""
+    archive = tmp_path / "season.ZIP"
+    archive.write_bytes(_upload(b"local episode bytes").getvalue())
+    before = archive.stat()
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Local archives must not copy or decompress video payloads")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    monkeypatch.setattr(ZipFile, "read", forbidden)
+    monkeypatch.setattr(ZipFile, "open", forbidden)
+    state = job_runner.create_from_path(
+        archive.relative_to(tmp_path),
+        7,
+        name="Local Show",
+        cfg=Settings(llm_provider="mock", whisper_model="tiny"),
+    )
+    assert state.params.zip_path == archive.resolve()
+    assert state.params.target_seconds == 420
+    assert state.params.name == "Local Show"
+    assert state.params.llm_provider == "mock"
+    assert state.params.whisper_model == "tiny"
+    assert archive.stat().st_size == before.st_size
+    assert archive.stat().st_mtime_ns == before.st_mtime_ns
+    assert not (job_runner.jobs_dir / state.job_id / "input").exists()
+    assert job_runner.get_state(state.job_id) == state
+    assert controller.list_jobs(jobs_dir=job_runner.jobs_dir) == [state]
+    assert all(
+        getattr(state.stages, name).status == "pending"
+        for name in ("ingest", "transcribe", "scenes", "nlp", "select", "render")
+    )
+    assert not job_runner.busy
+
+
+@pytest.mark.parametrize("invalid", ["missing", "directory", "extension", "corrupt", "truncated"])
+def test_invalid_local_archive_never_publishes_job(
+    job_runner: JobRunner,
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    """File paths, suffixes, and ZIP metadata are validated before creating any job state."""
+    archive = tmp_path / "source.zip"
+    if invalid == "directory":
+        archive.mkdir()
+    elif invalid == "extension":
+        archive = tmp_path / "source.mp4"
+        archive.write_bytes(_upload().getvalue())
+    elif invalid == "corrupt":
+        archive.write_bytes(b"not a ZIP archive")
+    elif invalid == "truncated":
+        archive.write_bytes(b"PK\x03\x04truncated")
+    with pytest.raises((ValueError, FileNotFoundError, BadZipFile)):
+        job_runner.create_from_path(archive, 2)
+    assert controller.list_jobs(jobs_dir=job_runner.jobs_dir) == []
+    assert not job_runner.busy
+
+
+@pytest.mark.parametrize("target", [0, -1, float("nan"), float("inf")])
+def test_invalid_local_archive_target_never_creates_job(
+    job_runner: JobRunner,
+    tmp_path: Path,
+    target: float,
+) -> None:
+    """A valid local ZIP still needs a finite positive runtime before job publication."""
+    archive = tmp_path / "source.zip"
+    archive.write_bytes(_upload().getvalue())
+    with pytest.raises(ValidationError):
+        job_runner.create_from_path(archive, target)
+    assert controller.list_jobs(jobs_dir=job_runner.jobs_dir) == []

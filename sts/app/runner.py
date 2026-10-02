@@ -97,6 +97,37 @@ class JobRunner:
                 directory.replace(destination)
                 return state
 
+    def create_from_path(
+        self,
+        zip_path: Path,
+        target_minutes: float,
+        *,
+        name: str | None = None,
+        cfg: Settings | None = None,
+    ) -> JobState:
+        """Create a pending job referencing a validated ZIP already on local disk.
+
+        Resolve the archive path and read ZIP metadata without copying its video
+        payloads. Keep the original archive available until ingestion completes.
+        Invalid paths or ZIP structures never publish a new job.
+        """
+        with self._lock:
+            self._ensure_open()
+            if self._active() is not None:
+                raise RuntimeError("Another job is already running; wait for it to finish")
+            source = zip_path.expanduser().resolve(strict=True)
+            if not source.is_file() or source.suffix.casefold() != ".zip":
+                raise ValueError("Choose a local .zip file")
+            with ZipFile(source) as archive:
+                archive.infolist()
+            return create_job(
+                source,
+                target_minutes,
+                name=name,
+                jobs_dir=self.jobs_dir,
+                cfg=cfg,
+            )
+
     def start(self, job_id: str) -> bool:
         """Start or resume one job, returning False for repeated active or completed launches.
 

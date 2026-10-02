@@ -59,7 +59,7 @@ Start the website from this directory:
 ```
 
 Open `http://127.0.0.1:8501`. The interface uses a dark cinematic palette, warm
-gold accents, responsive layouts, and native accessible controls. Upload a season
+gold accents, responsive layouts, and native accessible controls. Choose a season
 ZIP, name the project, set a maximum runtime, choose an editorial engine, and
 select **Create my film**. The finished workspace includes a video preview and
 separate MP4/SRT downloads. Silent scenes can produce a valid empty subtitle file.
@@ -78,7 +78,13 @@ with bounded `st.cache_resource` caches; opening the page does not load weights.
 
 Uploads are accepted up to 2 GB. Streamlit buffers the upload, then the application
 copies it in chunks to the job's durable `input/source.zip` before starting work.
-For larger seasons, use the CLI. Invalid ZIP uploads do not publish partial jobs.
+For larger seasons, select **Use local ZIP** and paste the archive's full path.
+On Windows, right-click the ZIP in File Explorer and select **Copy as path**;
+surrounding quotes are accepted. Local ZIPs have no browser upload size limit and
+are read directly from disk without buffering or copying the archive. Keep the
+original ZIP in place and unchanged until **Import episodes** completes. Empty,
+missing, or non-ZIP paths keep the create button disabled with a visible explanation. Invalid
+ZIP archives do not publish partial jobs.
 
 One background worker serves all browser sessions in this local server, preventing
 overlapping model work and duplicate job launches. Stage progress is read from

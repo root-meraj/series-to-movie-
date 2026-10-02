@@ -32,6 +32,8 @@ class ControlledRunner(JobRunner):
         """Record create/start requests and leave all model work disabled."""
         super().__init__(jobs_dir)
         self.created: list[JobState] = []
+        self.local_paths: list[Path] = []
+        self.upload_count = 0
         self.started: list[str] = []
         self.running_id: str | None = None
         self.worker_errors: dict[str, str] = {}
@@ -55,8 +57,23 @@ class ControlledRunner(JobRunner):
         cfg: Settings | None = None,
     ) -> JobState:
         """Publish an uploaded ZIP through the real runner without starting models."""
+        self.upload_count += 1
         state = super().create(upload, target_minutes, name=name, cfg=cfg)
         self.created.append(state)
+        return state
+
+    def create_from_path(
+        self,
+        zip_path: Path,
+        target_minutes: float,
+        *,
+        name: str | None = None,
+        cfg: Settings | None = None,
+    ) -> JobState:
+        """Retain a local ZIP reference through the real runner without starting models."""
+        state = super().create_from_path(zip_path, target_minutes, name=name, cfg=cfg)
+        self.created.append(state)
+        self.local_paths.append(zip_path.resolve())
         return state
 
     def start(self, job_id: str) -> bool:
@@ -156,11 +173,102 @@ def test_empty_app_requires_an_upload_and_shows_creation_widgets(runner: Control
     """A new session exposes the ZIP workflow without starting any model or job."""
     app = _app()
     assert not app.exception
+    assert app.radio(key="archive_source").value == "Upload ZIP"
     assert app.file_uploader(key="upload_zip").allowed_type == [".zip"]
+    assert app.file_uploader(key="upload_zip").proto.max_upload_size_mb == 2048
     assert app.button(key="create_project").disabled
     assert app.number_input(key="target_minutes").value > 0
     assert app.selectbox(key="processing_device").value == "CPU"
     assert runner.created == runner.started == []
+    explanations = " ".join(item.value for item in app.caption)
+    assert "2 GB" in explanations
+    assert "local" in explanations.casefold()
+
+
+def test_local_zip_path_with_copy_as_path_quotes_creates_one_job_without_upload_or_copy(
+    runner: ControlledRunner, tmp_path: Path
+) -> None:
+    """A quoted local path bypasses browser transfer and retains the original archive reference."""
+    source = tmp_path / "My season archive.zip"
+    source.write_bytes(_zip_bytes())
+    before = source.stat().st_mtime_ns
+    app = _app()
+    app.radio(key="archive_source").set_value("Use local ZIP").run()
+    assert not app.get("file_uploader")
+    app.text_input(key="local_zip_path").set_value(f'  "{source}"  ')
+    app.text_input(key="show_name").set_value("Local season")
+    app.number_input(key="target_minutes").set_value(3.0)
+    app.selectbox(key="editorial_engine").select("Preview · sample scoring")
+    app.run()
+    assert not app.button(key="create_project").disabled
+    app.button(key="create_project").click().run()
+    assert not app.exception
+    assert runner.upload_count == 0
+    assert runner.local_paths == [source.resolve()]
+    assert len(runner.created) == 1
+    state = runner.created[0]
+    assert state.params.zip_path == source.resolve()
+    assert state.params.target_seconds == 180.0
+    assert state.params.name == "Local season"
+    assert state.params.llm_provider == "mock"
+    assert state.params.whisper_device == "cpu"
+    assert state.params.whisper_compute == "int8"
+    directory = runner.jobs_dir / state.job_id
+    saved = read_json(directory / "state.json", JobState)
+    assert saved.params.zip_path == source.resolve()
+    assert not list(directory.rglob("*.zip"))
+    assert source.read_bytes() == _zip_bytes()
+    assert source.stat().st_mtime_ns == before
+    assert app.session_state["active_job"] == state.job_id
+    assert runner.started == [state.job_id]
+    app.run()
+    assert runner.started == [state.job_id]
+
+
+@pytest.mark.parametrize(
+    "kind, expected_reason",
+    [
+        ("empty", "Paste the full path"),
+        ("missing", "ZIP file not found"),
+        ("wrong_extension", "file path must end in .zip"),
+    ],
+)
+def test_local_zip_requires_an_existing_zip_path_before_enabling_create(
+    runner: ControlledRunner, tmp_path: Path, kind: str, expected_reason: str
+) -> None:
+    """Missing or unsupported source paths keep creation disabled with a visible explanation."""
+    app = _app()
+    app.radio(key="archive_source").set_value("Use local ZIP").run()
+    source = tmp_path / ("missing.zip" if kind == "missing" else "season.mp4")
+    if kind == "wrong_extension":
+        source.write_bytes(_zip_bytes())
+    if kind != "empty":
+        app.text_input(key="local_zip_path").set_value(str(source)).run()
+    assert not app.exception
+    assert app.button(key="create_project").disabled
+    assert runner.created == runner.started == []
+    reason = " ".join(
+        item.value for elements in (app.caption, app.warning, app.error) for item in elements
+    )
+    assert expected_reason in reason
+
+
+def test_invalid_local_zip_displays_error_without_a_saved_job(
+    runner: ControlledRunner, tmp_path: Path
+) -> None:
+    """An existing .zip with corrupt contents fails before publishing any project."""
+    source = tmp_path / "broken.zip"
+    source.write_bytes(b"not an archive")
+    app = _app()
+    app.radio(key="archive_source").set_value("Use local ZIP").run()
+    app.text_input(key="local_zip_path").set_value(str(source)).run()
+    assert not app.button(key="create_project").disabled
+    app.button(key="create_project").click().run()
+    assert not app.exception
+    assert app.error
+    assert runner.created == runner.started == []
+    assert runner.upload_count == 0
+    assert not list(runner.jobs_dir.glob("*/state.json"))
 
 
 def test_upload_creates_one_durable_mock_job_and_widget_reruns_do_not_restart_it(

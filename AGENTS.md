@@ -457,6 +457,12 @@ Phase 10 UI clarifications (existing JSON keys are unchanged):
   together by atomic directory replacement. Browser filenames never determine
   disk paths. The existing `state.params.zip_path` points at the durable input.
   Ingestion retains responsibility for entry-path and media validation.
+- Archives over the browser's 2 GB upload limit can use **Use local ZIP** in the
+  same form. `JobRunner.create_from_path(...)` validates a local ZIP's central
+  directory and saves its resolved path in existing `state.params.zip_path`,
+  without buffering or copying its payload. The original must remain in place
+  and unchanged until ingestion completes. Quoted Windows Copy-as-path values are accepted;
+  disabled create buttons show the missing source or active-worker reason.
 - New projects expose a name, maximum runtime, editorial provider, optional model,
   and processing-device setting. Preview uses MockProvider and is labeled as sample
   scoring. OpenAI requires existing .env authorization/credentials. UI CPU/int8 is

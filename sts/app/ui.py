@@ -99,8 +99,11 @@ _STYLES = """
  outline:2px solid #e3c28e; outline-offset:3px; }
 .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
  background:#d8af72; color:#15181b; border:1px solid #d8af72; }
-.stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover {
+.stButton button[kind="primary"]:hover:not(:disabled),
+.stDownloadButton button[kind="primary"]:hover:not(:disabled) {
  background:#e8c58f; border-color:#e8c58f; color:#10151c; }
+.stButton button[kind="primary"]:disabled {
+ background:#33343a; border-color:#42444b; color:#9b9ca2; cursor:not-allowed; }
 .quiet-note { color:#91a0b4; font-size:11px; line-height:1.8; }
 .promise-row { display:flex; gap:26px; flex-wrap:wrap; padding:19px 0 0;
  color:#aeb7c3; font-size:11px; }
@@ -297,6 +300,23 @@ def _hero() -> None:
     )
 
 
+def _local_zip_source(value: str) -> tuple[Path | None, str | None]:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        value = value[1:-1].strip()
+    if not value:
+        return None, "Paste the full path to your ZIP file to enable Create my film."
+    try:
+        path = Path(value).expanduser()
+        if path.suffix.lower() != ".zip":
+            return None, "Choose a ZIP archive; the file path must end in .zip."
+        if not path.is_file():
+            return None, "ZIP file not found. Check the full path and try again."
+        return path, None
+    except (OSError, ValueError, RuntimeError):
+        return None, "That file path cannot be opened. Check the full path and try again."
+
+
 def _new_project(runner: JobRunner, settings: Settings) -> None:
     _hero()
     _html(
@@ -307,17 +327,43 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
     with left, st.container(border=True, key="upload_panel"):
         _html(
             '<div class="panel-title">Bring the season</div>'
-            '<div class="panel-note">Upload a ZIP of your episodes. We’ll put them in order.</div>'
+            '<div class="panel-note">Choose a ZIP of your episodes. We’ll put them in order.</div>'
         )
-        upload = st.file_uploader(
-            "Season archive",
-            type=["zip"],
-            key="upload_zip",
-            label_visibility="collapsed",
-            max_upload_size=2048,
-            help="MP4, MKV, AVI, MOV, and WebM episodes in one ZIP. Up to 2 GB.",
+        source = st.radio(
+            "Episode source",
+            ["Upload ZIP", "Use local ZIP"],
+            horizontal=True,
+            key="archive_source",
         )
-        st.caption("ZIP · MP4, MKV, AVI, MOV, WEBM · up to 2 GB")
+        upload = None
+        local_path = None
+        if source == "Use local ZIP":
+            st.caption("Recommended for archives over 2 GB. Reads directly from this computer.")
+            local_value = st.text_input(
+                "ZIP file path",
+                placeholder=r"C:\Videos\season.zip",
+                key="local_zip_path",
+                help="Paste the full path. On Windows, right-click the ZIP → Copy as path.",
+            )
+            local_path, source_issue = _local_zip_source(local_value)
+            st.caption(
+                "Keep the original ZIP in place and unchanged until Import episodes completes."
+            )
+        else:
+            upload = st.file_uploader(
+                "Season archive",
+                type=["zip"],
+                key="upload_zip",
+                label_visibility="collapsed",
+                max_upload_size=2048,
+                help="MP4, MKV, AVI, MOV, and WebM episodes in one ZIP. Up to 2 GB.",
+            )
+            st.caption("Upload up to 2 GB. For a larger archive, choose Use local ZIP above.")
+            source_issue = (
+                "Choose a ZIP up to 2 GB, or switch to Use local ZIP for a larger archive."
+                if upload is None
+                else None
+            )
         name = st.text_input(
             "Project name",
             placeholder="e.g. The Last Horizon · Season 1",
@@ -369,21 +415,27 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                 st.caption(
                     "Provider access and credentials come from your local .env configuration."
                 )
+        blocked_reason = (
+            "An edit is processing. You can create another when it finishes."
+            if runner.busy
+            else source_issue
+        )
         create = st.button(
             "Create my film",
             icon=":material/arrow_forward:",
             key="create_project",
             type="primary",
             width="stretch",
-            disabled=upload is None or runner.busy,
+            disabled=blocked_reason is not None,
+            help=blocked_reason,
         )
-        if runner.busy:
-            st.caption("An edit is processing. You can create another when it finishes.")
+        if blocked_reason:
+            st.caption(blocked_reason)
     _html(
         '<div class="promise-row"><span>Opening & closing scenes preserved</span>'
         "<span>Progress saved automatically</span><span>Film + subtitles included</span></div>"
     )
-    if create and upload is not None:
+    if create:
         try:
             if engine == "openai" and (
                 not settings.enable_openai or not settings.openai_api_key.get_secret_value()
@@ -405,7 +457,14 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                     "whisper_compute": "int8" if compute_device == "cpu" else "auto",
                 }
             )
-            state = runner.create(upload, float(target), name=name.strip() or None, cfg=cfg)
+            if local_path is not None:
+                state = runner.create_from_path(
+                    local_path, float(target), name=name.strip() or None, cfg=cfg
+                )
+            elif upload is not None:
+                state = runner.create(upload, float(target), name=name.strip() or None, cfg=cfg)
+            else:
+                return
             st.session_state.active_job = state.job_id
             runner.start(state.job_id)
             st.rerun()
