@@ -1,4 +1,4 @@
-"""Generate a 90-second synthetic episode and a ZIP with tricky episode names."""
+"""Generate synthetic 90-second episodes, optionally with cuts, and a tricky-name ZIP."""
 
 from __future__ import annotations
 
@@ -13,12 +13,15 @@ from zipfile import ZIP_STORED, ZipFile
 from rich.logging import RichHandler
 
 
-def make_fixture(output_dir: Path) -> Path:
+def make_fixture(output_dir: Path, *, scene_cuts: bool = False) -> Path:
     """Create ep_test.mp4 and show.zip without downloading copyrighted media.
 
     The archive deliberately stores episode 10 before episodes 2 and 1. The MKV
     entry is remuxed in full, without cutting, so its container matches its suffix.
-    All three archive entries contain the same synthetic 90-second test pattern.
+    All three archive entries contain the same synthetic 90-second video. By
+    default it is the original test pattern. ``scene_cuts=True`` creates three
+    distinct 30-second color shots, allowing the full pipeline to retain season
+    bookends within the two-minute integration-smoke runtime.
     """
     logger = logging.getLogger(__name__)
     ffmpeg = shutil.which("ffmpeg")
@@ -37,17 +40,34 @@ def make_fixture(output_dir: Path) -> Path:
         video_path = temporary_path / "ep_test.mp4"
         mkv_path = temporary_path / "show_1x02.mkv"
         common = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if scene_cuts:
+            inputs = [
+                argument
+                for color in ("red", "green", "blue")
+                for argument in (
+                    "-f", "lavfi", "-i", f"color=c={color}:duration=30:size=640x360:rate=30"
+                )
+            ]
+            mapping = [
+                "-filter_complex",
+                "[0:v][1:v][2:v]concat=n=3:v=1:a=0[video]",
+                "-map",
+                "[video]",
+                "-map",
+                "3:a:0",
+            ]
+        else:
+            inputs = ["-f", "lavfi", "-i", "testsrc2=duration=90:size=640x360:rate=30"]
+            mapping = []
         subprocess.run(
             [
                 *common,
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc2=duration=90:size=640x360:rate=30",
+                *inputs,
                 "-f",
                 "lavfi",
                 "-i",
                 "sine=frequency=440:duration=90",
+                *mapping,
                 "-shortest",
                 "-c:v",
                 "libx264",
@@ -65,7 +85,10 @@ def make_fixture(output_dir: Path) -> Path:
             ],
             check=True,
         )
-        logger.info("Fixture unit-progress: generated 90-second MP4 with audio")
+        logger.info(
+            "Fixture unit-progress: generated 90-second MP4 with audio%s",
+            " and cuts at 30/60 seconds" if scene_cuts else "",
+        )
         # Full-file container conversion only: no stream-copy cuts are performed.
         subprocess.run(
             [*common, "-i", str(video_path), "-map", "0", "-c", "copy", str(mkv_path)],
@@ -93,9 +116,14 @@ def main() -> int:
         default=Path(__file__).resolve().parents[1] / "tests" / "fixtures",
         help="Destination directory (default: project tests/fixtures).",
     )
+    parser.add_argument(
+        "--scene-cuts",
+        action="store_true",
+        help="Use three 30-second shots for the two-minute end-to-end smoke test.",
+    )
     args = parser.parse_args()
     try:
-        make_fixture(args.output_dir)
+        make_fixture(args.output_dir, scene_cuts=args.scene_cuts)
     except (OSError, RuntimeError, subprocess.CalledProcessError):
         logging.getLogger(__name__).exception("Fixture generation failed")
         return 1

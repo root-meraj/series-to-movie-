@@ -1,4 +1,4 @@
-"""Scene selection, explicit movie rendering, and saved-job inspection."""
+"""Run and resume ZIP-to-movie jobs, re-render selections, and inspect saved progress."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from sts.pipeline.controller import get_status, list_jobs, render_saved_job, res
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sts", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="Create a job (through Phase 7: scene selection)")
+    run = commands.add_parser("run", help="Create a job and produce a condensed movie")
     run.add_argument("--zip", type=Path, required=True)
     run.add_argument("--target-minutes", type=float, default=None)
     run.add_argument("--name")
-    resume = commands.add_parser("resume", help="Resume a saved job through scene selection")
+    resume = commands.add_parser("resume", help="Resume a saved job through rendering")
     resume.add_argument("--job", required=True)
     render = commands.add_parser("render", help="Render or re-render from saved selected.json")
     render.add_argument("--job", required=True)
@@ -33,8 +33,17 @@ def _parser() -> argparse.ArgumentParser:
     for command in (run, resume):
         command.add_argument(
             "--stage",
-            choices=["ingest", "transcribe", "scenes", "characters", "baseline", "llm", "select"],
-            default="select",
+            choices=[
+                "ingest",
+                "transcribe",
+                "scenes",
+                "characters",
+                "baseline",
+                "llm",
+                "select",
+                "render",
+            ],
+            default="render",
         )
     status = commands.add_parser("status", help="Show state JSON or list all jobs")
     status.add_argument("--job")
@@ -42,6 +51,12 @@ def _parser() -> argparse.ArgumentParser:
     for command in (run, resume, render, status, listing):
         command.add_argument("--jobs-dir", type=Path, default=Path("data/jobs"))
     return parser
+
+
+def _show_outputs(console: Console, jobs_dir: Path, job_id: str) -> None:
+    directory = (jobs_dir / job_id / "output").resolve()
+    console.print(f"Movie: {directory / 'condensed_movie.mp4'}", soft_wrap=True, markup=False)
+    console.print(f"Subtitles: {directory / 'condensed.srt'}", soft_wrap=True, markup=False)
 
 
 def _show_jobs(console: Console, jobs_dir: Path) -> None:
@@ -98,12 +113,8 @@ def main(argv: list[str] | None = None) -> int:
             state = resume_job(args.job, jobs_dir=args.jobs_dir, stage=args.stage)
         elif args.command == "render":
             state = render_saved_job(args.job, jobs_dir=args.jobs_dir, loudnorm=args.loudnorm)
-            console.print(
-                f"Job {state.job_id}: render done. "
-                f"Outputs: {args.jobs_dir / state.job_id / 'output' / 'condensed_movie.mp4'} "
-                "and condensed.srt.",
-                markup=False,
-            )
+            console.print(f"Job {state.job_id}: render done.", markup=False)
+            _show_outputs(console, args.jobs_dir, state.job_id)
             return 0
         elif args.command == "status" and args.job:
             state = get_status(args.job, jobs_dir=args.jobs_dir)
@@ -114,10 +125,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         console.print(
             f"Job {state.job_id}: {args.stage} done "
-            f"({state.stages.ingest.episode_count} episodes). "
-            f"Stopped after {args.stage}; later stages remain pending.",
+            f"({state.stages.ingest.episode_count} episodes).",
             markup=False,
         )
+        if args.stage == "render":
+            _show_outputs(console, args.jobs_dir, state.job_id)
+        else:
+            console.print(f"Stopped after {args.stage}.", markup=False)
         return 0
     except Exception as exc:
         console.print(f"Error: {exc}", style="red", markup=False)

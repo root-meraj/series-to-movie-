@@ -410,6 +410,36 @@ Phase 8 contract additions and clarifications (existing keys are unchanged):
   sources with different aspect ratios and audio formats, without model inference.
   The saved three-minute Phase 7 fixture is rendered and decoded separately.
 
+Phase 9 orchestration clarifications (existing JSON keys are unchanged):
+
+- `run_job`, `resume_job`, and their CLI commands now default to `stage="render"`.
+  Stage stops are `ingest`, `transcribe`, `scenes`, `characters`, `baseline`, `llm`,
+  `select`, and `render`, in that order. The three NLP stops map to their existing
+  `state.stages.nlp` substage checkpoints. Completed stages are skipped before
+  calling their runner, and a completed normal resume does not rewrite artifacts.
+- The controller wraps every stage runner, reloads the latest state after a
+  failure, preserves unit checkpoints, marks the active stage failed, records an
+  error, and re-raises. NLP failures also mark aggregate NLP failed. Errors already
+  recorded by a stage's own handler are not duplicated. Each failed resume attempt
+  records a fresh error even if that stage was already failed.
+- Successful CLI rendering reports the absolute movie and subtitle paths. The
+  separate `sts render` command retains Phase 8's explicit re-render behavior for
+  edited selections and optional loudness normalization.
+- `scripts/make_fixture.py --scene-cuts` optionally generates three 30-second
+  solid-color scenes in each 90-second episode. The default uncut fixture is
+  unchanged. The two-minute end-to-end smoke uses the cut fixture in
+  `tests/fixtures/end-to-end`, so complete first/last scenes fit without changing
+  selector guardrails. The uncut fixture still requires at least three minutes.
+- Controller integration tests use deterministic model/media doubles and
+  MockProvider while exercising real stages and JSON persistence. The opt-in
+  `tests/test_end_to_end_smoke.py --run-model-smoke` runs the default CLI with real
+  local Whisper and FFmpeg, checks all contracts and completed stages, decodes the
+  whole movie, checks subtitles, and verifies completed resume leaves artifacts
+  unchanged. External LLM transports remain blocked. Silent synthetic input may
+  correctly produce empty transcripts and an empty SRT.
+- Phase 9 ends with controller, CLI, and smoke verification. Streamlit and
+  evaluation remain Phases 10 and 11.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

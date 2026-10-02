@@ -1,9 +1,10 @@
-"""Job management through Phase 7, ending with runtime-constrained scene selection."""
+"""End-to-end job orchestration with stage boundaries, error recording, and resume."""
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,7 +17,15 @@ from sts.pipeline.render import render_job
 from sts.pipeline.scenes import build_scenes
 from sts.pipeline.selector import build_selection
 from sts.pipeline.transcribe import transcribe_job
-from sts.schemas import ErrorRecord, JobParams, JobState, read_json, write_json
+from sts.schemas import (
+    ErrorRecord,
+    JobParams,
+    JobState,
+    StageName,
+    StageState,
+    read_json,
+    write_json,
+)
 
 
 def _job_dir(job_id: str, jobs_dir: Path) -> Path:
@@ -53,33 +62,71 @@ def _run_ingest(job_dir: Path) -> JobState:
     return read_json(job_dir / "state.json", JobState)
 
 
+def _stage_state(state: JobState, label: str) -> StageState:
+    if label in {"characters", "baseline", "llm"}:
+        return getattr(state.stages.nlp, label)
+    return getattr(state.stages, label)
+
+
+def _run_stage(
+    job_dir: Path, label: str, stage_name: StageName, runner: Callable[[Path], JobState]
+) -> JobState:
+    state = read_json(job_dir / "state.json", JobState)
+    if _stage_state(state, label).status == "done":
+        logging.getLogger(__name__).info(
+            "%s done: skipping completed stage for %s", label, state.job_id
+        )
+        return state
+    previous_error_count = len(state.errors)
+    try:
+        return runner(job_dir)
+    except Exception as exc:
+        # Read the newest checkpoint: a runner may have completed units before
+        # failing. Its own handler normally records the episode and exact error.
+        state = read_json(job_dir / "state.json", JobState)
+        failed = _stage_state(state, label)
+        if failed.status != "failed" or len(state.errors) <= previous_error_count:
+            failed.status = "failed"
+            if stage_name == "nlp":
+                state.stages.nlp.status = "failed"
+            state.errors.append(ErrorRecord(stage=stage_name, message=str(exc)))
+            write_json(job_dir / "state.json", state)
+        logging.getLogger(__name__).error("Job %s failed during %s", state.job_id, label)
+        raise
+
+
 def _run_stages(job_dir: Path, stage: str) -> JobState:
-    state = _run_ingest(job_dir)
-    if stage == "ingest":
-        return state
-    state = transcribe_job(job_dir)
-    if stage == "transcribe":
-        return state
-    state = build_scenes(job_dir)
-    if stage == "scenes":
-        return state
-    state = build_characters(job_dir)
-    if stage == "characters":
-        return state
-    state = build_baseline(job_dir)
-    if stage == "baseline":
-        return state
-    state = build_llm(job_dir)
-    if stage == "llm":
-        return state
-    return build_selection(job_dir)
+    runners: tuple[tuple[str, StageName, Callable[[Path], JobState]], ...] = (
+        ("ingest", "ingest", _run_ingest),
+        ("transcribe", "transcribe", transcribe_job),
+        ("scenes", "scenes", build_scenes),
+        ("characters", "nlp", build_characters),
+        ("baseline", "nlp", build_baseline),
+        ("llm", "nlp", build_llm),
+        ("select", "select", build_selection),
+        ("render", "render", render_job),
+    )
+    for label, stage_name, runner in runners:
+        state = _run_stage(job_dir, label, stage_name, runner)
+        if stage == label:
+            return state
+    return state
 
 
 def _validate_stage(stage: str) -> None:
-    if stage not in {"ingest", "transcribe", "scenes", "characters", "baseline", "llm", "select"}:
+    if stage not in {
+        "ingest",
+        "transcribe",
+        "scenes",
+        "characters",
+        "baseline",
+        "llm",
+        "select",
+        "render",
+    }:
         raise ValueError(
-            "Only --stage ingest, transcribe, scenes, characters, baseline, llm, or select "
-            "is available"
+            "Only --stage ingest, transcribe, scenes, characters, baseline, llm, select, "
+            "or render is available"
         )
 
 
@@ -90,9 +137,9 @@ def run_job(
     name: str | None = None,
     jobs_dir: Path = Path("data/jobs"),
     cfg: Settings | None = None,
-    stage: str = "select",
+    stage: str = "render",
 ) -> JobState:
-    """Create a job through scene selection, or stop at an earlier stage."""
+    """Create and complete a ZIP-to-movie job, or stop at an explicit earlier stage."""
     _validate_stage(stage)
     settings = cfg if cfg is not None else Settings()
     minutes = settings.target_minutes if target_minutes is None else target_minutes
@@ -126,7 +173,7 @@ def run_job(
 
 
 def resume_job(
-    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "select"
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), stage: str = "render"
 ) -> JobState:
     """Resume through the requested stage, using checkpoints and persisted model settings."""
     _validate_stage(stage)

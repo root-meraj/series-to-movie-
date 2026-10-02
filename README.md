@@ -5,9 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 8 adds resumable H.264/AAC clip encoding, safe concatenation, and aligned
-SRT export. `run`/`resume` still stop after scene selection; use the separate
-`render` command to produce `output/condensed_movie.mp4` and `output/condensed.srt`.
+Phase 9 connects every pipeline stage. `run` and `resume` now continue through
+rendering by default, producing `output/condensed_movie.mp4` and
+`output/condensed.srt`. Explicit stage stops remain available. The Streamlit UI
+and evaluation scripts are reserved for the following phases.
 
 ## Development setup
 
@@ -33,7 +34,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 8. Install the complete
+These dependencies are sufficient through Phase 9. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -48,25 +49,25 @@ spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
 
-## Process a season through scene selection
+## Process a season into a movie
 
 ```powershell
 $env:LLM_PROVIDER = "mock"  # Offline fixture scoring; choose before creating a job.
-.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 3 --name "Fixture Show"
+.\.venv\Scripts\python.exe scripts/make_fixture.py --scene-cuts --output-dir tests/fixtures/end-to-end
+.\.venv\Scripts\sts.exe run --zip tests/fixtures/end-to-end/show.zip --target-minutes 2 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
-.\.venv\Scripts\sts.exe render --job JOB_ID
 .\.venv\Scripts\sts.exe list
 ```
 
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
-Both `run` and `resume` default to `--stage select`. To stop earlier, pass
-`--stage ingest`, `--stage transcribe`, `--stage scenes`, `--stage characters`, or
-`--stage baseline` or `--stage llm`. The job list shows progress through rendering.
-Overall NLP becomes `done` after LLM scoring. Rendering starts with the explicit
-`render` command in this phase; automatic end-to-end orchestration follows in Phase 9.
+Both `run` and `resume` default to `--stage render`. To stop earlier, pass
+`--stage ingest`, `--stage transcribe`, `--stage scenes`, `--stage characters`,
+`--stage baseline`, `--stage llm`, or `--stage select`. The CLI reports absolute
+movie and subtitle paths after rendering. The job list shows progress through
+rendering, and overall NLP becomes `done` after LLM scoring.
 
 Use `LLM_PROVIDER=mock` for deterministic offline development. Its scores and
 summaries are canned test data. For OpenAI, configure `.env` with
@@ -94,6 +95,12 @@ Missing or damaged completed files are restored while resuming an unfinished sta
 The source ZIP checksum prevents mixing different archives in one job. Completed
 stages are skipped even if the original ZIP is no longer present. There is no
 support yet for concurrent processes writing the same job.
+
+The controller also catches failures that occur before a stage's own error
+handler. It reloads the latest state before recording the error, preserving
+completed units. Errors already recorded by a stage are not duplicated; a new
+failed resume attempt records a new error. A completed job's normal resume skips
+every stage without rewriting artifacts or loading models.
 
 Transcription extracts each episode's first audio stream to a 16 kHz mono PCM WAV,
 decodes it once, and passes the waveform to Whisper with VAD enabled. It removes
@@ -199,8 +206,10 @@ closing scene removes preceding optional duplicates; forced bookends survive
 both filters. Deduplication may leave some of the budget unused.
 
 A target shorter than the combined bookends fails with the minimum required
-runtime. The synthetic fixture is uncut, so its first and last 90-second scenes
-require a three-minute target. A two-minute target cannot retain both whole scenes.
+runtime. The default synthetic fixture is uncut, so its first and last 90-second
+scenes require a three-minute target. Use `--scene-cuts` when generating the
+two-minute end-to-end fixture: each episode has three 30-second scenes, allowing
+both season bookends to fit.
 The selector uses full scene intervals and never exceeds the runtime budget.
 
 New jobs save the weights and minimum clip length. Older jobs adopt current
@@ -210,7 +219,8 @@ stale caches one episode at a time. Final scores and `selected.json` are publish
 before marking selection `done`. An interrupted publication resumes without
 repeating completed model inference. Completed selection is skipped on resume.
 
-Render the selected intervals with `sts render --job JOB_ID`. Each cut re-encodes
+Normal `run` and `resume` render the selected intervals automatically. Use
+`sts render --job JOB_ID` to render again after editing `selected.json`. Each cut re-encodes
 video to H.264 (veryfast, CRF 20) and audio to AAC (192 kbps). All clips use a
 fixed 1280×720 letterbox canvas, square pixels, yuv420p, 30 fps, a common video
 time base, and 48 kHz stereo audio. This preserves display aspect while making
@@ -253,6 +263,9 @@ source episodes and their bounds. The clip array controls their output order.
 The ZIP contains `ep10.mp4`, `show_1x02.mkv`, and `show.S01E01.mp4`, in that order.
 The three entries reuse the same synthetic content, with a full-file remux for MKV.
 Use `--output-dir PATH` to change the destination. Generated media is ignored by Git.
+Add `--scene-cuts` for three solid-color scenes per episode with cuts at 30 and
+60 seconds. This optional mode preserves the default test-pattern fixture and
+supports a two-minute selection without trimming scenes or dropping bookends.
 
 The tests cover settings, JSON contracts, atomic state writes, episode ordering,
 unsafe/corrupt input, CLI behavior, and recovery after a mid-ingestion failure.
@@ -281,12 +294,17 @@ subtitle trimming/offsets/Unicode/rounding, cache recovery, output publication
 failures, edited selections, optional loudnorm, and a real fully decoded FFmpeg join.
 The short media smoke test runs when FFmpeg and FFprobe are available; it needs
 no trained models or API calls.
+Controller integration tests exercise the actual stages and JSON persistence
+with deterministic model/media doubles and MockProvider. They cover each explicit
+stop, default full execution, saved settings, interrupted units, repeated failures
+before stage error handlers, and completed resume after deleting the source ZIP.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_transcribe_smoke.py --run-model-smoke -s
 .\.venv\Scripts\python.exe -m pytest tests/test_nlp_smoke.py --run-model-smoke -s
+.\.venv\Scripts\python.exe -m pytest tests/test_end_to_end_smoke.py --run-model-smoke -s
 ```
 
 The transcription smoke test processes the fixture ZIP with `small` Whisper on CPU/int8
@@ -296,9 +314,17 @@ The NLP smoke test uses synthetic dialogue to verify real spaCy character output
 384-dimensional MiniLM embeddings, cache reuse, and baseline score artifacts. It may download
 MiniLM on first use; install the spaCy model during setup first.
 
+The end-to-end smoke test generates the cut fixture under
+`tests/fixtures/end-to-end`, runs the default CLI with real local Whisper and
+MockProvider, and retains its job under `data/jobs/`. It verifies complete state,
+scene/score/selection contracts, a fully decoded 120-second H.264/AAC movie, SRT
+consistency, and unchanged files after a completed resume. Trained NLP models
+are used only when dialogue requires them; the synthetic tone normally yields
+empty transcripts and a valid empty SRT. External LLM requests remain blocked.
+
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 8, episodes, WAV/RMS files, transcripts,
+`output` directories. A completed run populates episodes, WAV/RMS files, transcripts,
 character/embedding/LLM checkpoints, `characters.json`, `scenes.json`, `scores.json`,
-`rolling_summary.json`, `selected.json`, and `state.json` are populated.
-The explicit render command also populates the clip cache, concat manifest,
+`rolling_summary.json`, `selected.json`, and `state.json`.
+Rendering also populates the clip cache, concat manifest,
 `output/condensed_movie.mp4`, and `output/condensed.srt`.

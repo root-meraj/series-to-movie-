@@ -598,12 +598,12 @@ def test_wrong_transcript_episode_preserves_previous_srt(tmp_path: Path) -> None
     assert output.read_text(encoding="utf-8") == "previous captions"
 
 
-def test_cli_render_reports_outputs_and_preserves_selection_default(
+def test_cli_render_reports_outputs(
     selected_job: Path,
     media_commands: list[list[str]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Phase 8 exposes rendering separately from the Phase 7 run/resume stop."""
+    """The explicit render command reports movie/SRT paths and persists loudnorm."""
     assert (
         main(
             [

@@ -41,8 +41,8 @@ def test_cli_missing_zip_returns_failure(capsys: pytest.CaptureFixture[str]) -> 
     assert "Error:" in capsys.readouterr().out
 
 
-def test_cli_rejects_unimplemented_stage() -> None:
-    """CLI validation cannot advance beyond the authorized build phase."""
+def test_cli_rejects_unknown_stage() -> None:
+    """CLI validation refuses unknown stage names before creating a job."""
     with pytest.raises(SystemExit) as error:
-        main(["run", "--zip", "show.zip", "--stage", "render"])
+        main(["run", "--zip", "show.zip", "--stage", "unknown"])
     assert error.value.code == 2

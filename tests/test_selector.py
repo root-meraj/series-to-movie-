@@ -324,7 +324,7 @@ def test_resume_uses_saved_selection_settings_and_preserves_nlp_artifacts(
     monkeypatch.setenv("MIN_CLIP_SECONDS", "99")
     original = read_json(scored_job / "scores.json", ScoresDoc)
     scene_bytes = (scored_job / "scenes.json").read_bytes()
-    state = resume_job(scored_job.name)
+    state = resume_job(scored_job.name, stage="select")
     assert state.stages.select.status == "done"
     assert state.stages.render.status == "pending"
     assert state.stages.select.completed == ["E01", "E02"]
@@ -340,17 +340,17 @@ def test_resume_uses_saved_selection_settings_and_preserves_nlp_artifacts(
     assert (scored_job / "scenes.json").read_bytes() == scene_bytes
 
 
-def test_default_cli_select_stop_and_completed_stage_are_idempotent(
+def test_explicit_cli_select_stop_and_completed_stage_are_idempotent(
     scored_job: Path,
     embedding_calls: list[list[str]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Default resume publishes selection, then skips all work on subsequent calls."""
-    assert main(["resume", "--job", scored_job.name]) == 0
+    """An explicit select stop publishes selection, then skips all work on subsequent calls."""
+    assert main(["resume", "--job", scored_job.name, "--stage", "select"]) == 0
     assert "select done" in capsys.readouterr().out
     files = [path for path in scored_job.rglob("*.json")]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in files]
-    assert main(["resume", "--job", scored_job.name]) == 0
+    assert main(["resume", "--job", scored_job.name, "--stage", "select"]) == 0
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in files] == before
     assert embedding_calls == []
 
@@ -371,7 +371,7 @@ def test_missing_invalid_or_stale_cache_repairs_only_affected_episode(
         cache.write_text(
             cache.read_text(encoding="utf-8").replace("saved-model", "old-model"), encoding="utf-8"
         )
-    resume_job(scored_job.name)
+    resume_job(scored_job.name, stage="select")
     assert embedding_calls == [["C", "D"]]
 
 
@@ -392,14 +392,14 @@ def test_failed_episode_reuses_completed_embedding_on_resume(
 
     monkeypatch.setattr(selector, "episode_embeddings", fail_second)
     with pytest.raises(RuntimeError, match="simulated"):
-        resume_job(scored_job.name)
+        resume_job(scored_job.name, stage="select")
     failed = get_status(scored_job.name)
     assert failed.stages.select.completed == ["E01"]
     assert failed.stages.select.pending == ["E02"]
     assert failed.errors[-1].stage == "select"
     assert failed.errors[-1].episode == "E02"
     monkeypatch.setattr(selector, "episode_embeddings", original)
-    assert resume_job(scored_job.name).stages.select.status == "done"
+    assert resume_job(scored_job.name, stage="select").stages.select.status == "done"
     assert embedding_calls == [["A", "B"], ["C", "D"]]
 
 
@@ -428,13 +428,13 @@ def test_publication_failure_resumes_without_model_calls(
 
     monkeypatch.setattr(selector, "write_json", interrupt)
     with pytest.raises(OSError, match="simulated"):
-        resume_job(scored_job.name)
+        resume_job(scored_job.name, stage="select")
     failed = get_status(scored_job.name)
     assert failed.stages.select.status == "failed"
     assert failed.stages.nlp.status == "done"
     assert failed.errors[-1].episode is None
     monkeypatch.setattr(selector, "write_json", original)
-    state = resume_job(scored_job.name)
+    state = resume_job(scored_job.name, stage="select")
     assert state.stages.select.status == "done"
     assert state.errors == failed.errors
     assert read_json(scored_job / "selected.json", SelectionDoc).selected_total_seconds == 60
@@ -448,7 +448,7 @@ def test_infeasible_job_records_error_and_never_publishes_selection(scored_job: 
     write_json(scored_job / "state.json", state)
     before = (scored_job / "scores.json").read_bytes()
     with pytest.raises(ValueError, match="at least 40s"):
-        resume_job(scored_job.name)
+        resume_job(scored_job.name, stage="select")
     assert get_status(scored_job.name).stages.select.status == "failed"
     assert not (scored_job / "selected.json").exists()
     assert (scored_job / "scores.json").read_bytes() == before
@@ -464,7 +464,7 @@ def test_legacy_job_adopts_selection_settings_once(
     write_json(scored_job / "state.json", state)
     monkeypatch.setenv("MIN_CLIP_SECONDS", "25")
     monkeypatch.setenv("SCORE_WEIGHTS", "0,1,0,0")
-    state = resume_job(scored_job.name)
+    state = resume_job(scored_job.name, stage="select")
     assert state.params.min_clip_seconds == 25
     assert state.params.score_weights == (0, 1, 0, 0)
     assert read_json(scored_job / "selected.json", SelectionDoc).selected_total_seconds == 40

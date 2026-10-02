@@ -169,8 +169,8 @@ def test_list_jobs_is_newest_first_and_missing_root_is_empty(
     assert [job.job_id for job in list_jobs()] == [second.job_id, first.job_id]
 
 
-def test_later_stage_is_not_executed(tmp_path: Path) -> None:
-    """The Phase 1 controller refuses requests for unimplemented stages."""
+def test_unknown_stage_is_not_executed(tmp_path: Path) -> None:
+    """The controller refuses unknown stages before creating a job."""
     with pytest.raises(ValueError, match="Only --stage ingest"):
-        run_job(tmp_path / "show.zip", stage="render")
+        run_job(tmp_path / "show.zip", stage="unknown")
     assert list_jobs() == []
