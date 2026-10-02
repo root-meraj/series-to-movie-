@@ -303,6 +303,15 @@ class SelectionDoc(ContractModel):
         return self
 
 
+class RenderClipDoc(ContractModel):
+    """A rendered clip checkpoint, bound to its source, settings, and encoded bytes."""
+
+    scene_id: SceneId
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    duration: float = Field(gt=0)
+
+
 class EpisodeInfo(ContractModel):
     """A validated episode, persisted in the ingestion checkpoint manifest."""
 
@@ -373,6 +382,19 @@ class LLMStageState(EpisodeStageState):
     completed_scenes: list[SceneId] = Field(default_factory=list)
 
 
+class RenderStageState(StageState):
+    """Clip-level rendering progress and output publication checkpoints."""
+
+    input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    completed: list[SceneId] = Field(default_factory=list)
+    pending: list[SceneId] = Field(default_factory=list)
+    loudnorm: bool = False
+    video_done: bool = False
+    subtitles_done: bool = False
+    video_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    subtitles_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 class NLPState(StageState):
     """NLP progress; character preparation precedes the later scoring phases."""
 
@@ -389,7 +411,7 @@ class JobStages(ContractModel):
     scenes: EpisodeStageState = Field(default_factory=EpisodeStageState)
     nlp: NLPState = Field(default_factory=NLPState)
     select: EpisodeStageState = Field(default_factory=EpisodeStageState)
-    render: StageState = Field(default_factory=StageState)
+    render: RenderStageState = Field(default_factory=RenderStageState)
 
 
 class ErrorRecord(ContractModel):

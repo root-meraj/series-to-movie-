@@ -356,6 +356,60 @@ Phase 7 contract additions and clarifications (existing keys are unchanged):
   fixture has 90-second bookends, so Phase 7 fixture selection uses a three-minute
   target; a two-minute target correctly reports an infeasible budget.
 
+Phase 8 contract additions and clarifications (existing keys are unchanged):
+
+- `state.stages.render` adds `input_sha256` (optional 64-character hex digest),
+  `completed` and `pending` (scene ID lists), `loudnorm` (default false),
+  `video_done`, `subtitles_done` (default false), and optional `video_sha256` and
+  `subtitles_sha256`. A clip is complete only after its encoded file and validated
+  JSON checkpoint are committed. Output flags are checkpointed independently.
+- `output/clips/clip_XXXX.json` is a RenderClipDoc paired with `clip_XXXX.mp4`:
+  {"scene_id":"E01_s0001","input_sha256":"<64 hex characters>",
+  "output_sha256":"<64 hex characters>","duration":15.0}.
+  Duration is the probed container length in float seconds. The input digest
+  includes clip bounds/identity/path, source byte size and mtime in nanoseconds,
+  loudnorm, and renderer version. The output digest hashes all encoded bytes.
+  Resume validates these fields and FFprobe stream metadata before reuse. Missing,
+  changed, or corrupt caches are rebuilt; valid caches committed before a crash
+  are reusable even if state was not yet updated.
+- Rendering cuts always re-encode with `-ss` before `-i`, `-t` duration,
+  libx264/veryfast/CRF 20 and AAC/192k. Uniformity also requires a fixed 1280x720
+  letterbox canvas, square pixels, yuv420p, 30 fps, H.264 High/level 3.1,
+  1/90000 video time base, and 48 kHz stereo audio. Display aspect is preserved
+  before padding, including sources with nonsquare pixels. Both input streams
+  are required. Metadata/chapters are removed and MP4 faststart is enabled.
+- `output/clips.txt` is a UTF-8 concat manifest with quoted/escaped absolute paths.
+  Concatenation uses `-f concat -safe 0 -c copy` only after validating uniform
+  clips. It preserves demuxed timestamps with `-copyts -avoid_negative_ts disabled`
+  so AAC encoder priming does not shift the movie/subtitle origin. Encoding and
+  concatenation use temporary sibling files and publish
+  by replacement only after FFprobe validation. Failed output leaves the previous
+  complete destination intact. Each clip must match its requested source interval
+  within 0.15 seconds, allowing video-frame/AAC rounding. Movie length must match
+  the sum of probed clip lengths within 0.15 seconds.
+- `condensed.srt` clips each nonempty transcript segment to its retained source
+  interval and offsets it by cumulative probed clip duration, matching concat's
+  timeline. Clip array order is authoritative for manually edited selections.
+  Text is UTF-8 with whitespace collapsed. Timecodes are created only at the SRT
+  output boundary, rounded half-up to milliseconds; zero-length rounded cues are
+  dropped. Empty transcripts produce an empty SRT file. Processing loads one
+  episode's transcript at a time.
+- The stage input digest includes selected.json, clip fingerprints, and selected
+  transcript byte hashes. Changes invalidate final output checkpoints. Resume
+  verifies output byte hashes and repairs damaged artifacts. `done` requires both
+  the movie and SRT committed; failures record a `render` error with the episode
+  for clip failures. No upstream model work is performed by rendering.
+- Phase 8 adds `sts render --job JOB_ID [--loudnorm | --no-loudnorm]`, also accepting
+  `--jobs-dir`. The flag is saved across interrupted renders; omitting it preserves
+  the saved setting. This explicit command reopens completed renders and accepts
+  edited selected.json while reusing unaffected clips. Edited clips must have
+  unique scene IDs, match the ingestion manifest's episode/path, and fit its bounds.
+  A normal completed `render_job` call is skipped. `run`/`resume` still default to
+  `--stage select`; full controller orchestration is Phase 9.
+- Tests include real FFmpeg cuts and a fully decoded concat of short synthetic
+  sources with different aspect ratios and audio formats, without model inference.
+  The saved three-minute Phase 7 fixture is rendered and decoded separately.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

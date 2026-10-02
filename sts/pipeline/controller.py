@@ -12,6 +12,7 @@ from sts.nlp.ner import build_characters
 from sts.nlp.scorer_llm import build_llm
 from sts.nlp.scorer_textrank import build_baseline
 from sts.pipeline.ingest import ingest_zip
+from sts.pipeline.render import render_job
 from sts.pipeline.scenes import build_scenes
 from sts.pipeline.selector import build_selection
 from sts.pipeline.transcribe import transcribe_job
@@ -135,6 +136,13 @@ def resume_job(
 def get_status(job_id: str, *, jobs_dir: Path = Path("data/jobs")) -> JobState:
     """Read a job's validated state without starting pipeline work."""
     return read_json(_job_dir(job_id, jobs_dir) / "state.json", JobState)
+
+
+def render_saved_job(
+    job_id: str, *, jobs_dir: Path = Path("data/jobs"), loudnorm: bool | None = None
+) -> JobState:
+    """Render an existing selection, reusing clip checkpoints and accepting edited clips."""
+    return render_job(_job_dir(job_id, jobs_dir), loudnorm=loudnorm, force=True)
 
 
 def list_jobs(*, jobs_dir: Path = Path("data/jobs")) -> list[JobState]:

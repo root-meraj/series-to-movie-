@@ -5,10 +5,9 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 7 adds weighted scene selection within a runtime budget, protects the
-season's first and last scenes, and removes adjacent dialogue duplicates.
-Runs write final scores to `scores.json` and chronological clips to
-`selected.json`. Rendering remains a placeholder.
+Phase 8 adds resumable H.264/AAC clip encoding, safe concatenation, and aligned
+SRT export. `run`/`resume` still stop after scene selection; use the separate
+`render` command to produce `output/condensed_movie.mp4` and `output/condensed.srt`.
 
 ## Development setup
 
@@ -34,7 +33,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 7. Install the complete
+These dependencies are sufficient through Phase 8. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -56,6 +55,7 @@ $env:LLM_PROVIDER = "mock"  # Offline fixture scoring; choose before creating a 
 .\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 3 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
+.\.venv\Scripts\sts.exe render --job JOB_ID
 .\.venv\Scripts\sts.exe list
 ```
 
@@ -64,8 +64,9 @@ Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
 Both `run` and `resume` default to `--stage select`. To stop earlier, pass
 `--stage ingest`, `--stage transcribe`, `--stage scenes`, `--stage characters`, or
-`--stage baseline` or `--stage llm`. The job list shows progress through selection.
-Overall NLP becomes `done` after LLM scoring; rendering remains pending.
+`--stage baseline` or `--stage llm`. The job list shows progress through rendering.
+Overall NLP becomes `done` after LLM scoring. Rendering starts with the explicit
+`render` command in this phase; automatic end-to-end orchestration follows in Phase 9.
 
 Use `LLM_PROVIDER=mock` for deterministic offline development. Its scores and
 summaries are canned test data. For OpenAI, configure `.env` with
@@ -209,6 +210,42 @@ stale caches one episode at a time. Final scores and `selected.json` are publish
 before marking selection `done`. An interrupted publication resumes without
 repeating completed model inference. Completed selection is skipped on resume.
 
+Render the selected intervals with `sts render --job JOB_ID`. Each cut re-encodes
+video to H.264 (veryfast, CRF 20) and audio to AAC (192 kbps). All clips use a
+fixed 1280×720 letterbox canvas, square pixels, yuv420p, 30 fps, a common video
+time base, and 48 kHz stereo audio. This preserves display aspect while making
+episodes with different shapes compatible for concatenation. Cutting never uses
+stream copy; only the concat demuxer joins the uniform clips with `-c copy`.
+Concatenation preserves timestamps so AAC encoder priming does not shift the
+movie's starting point relative to subtitles.
+Both source video and audio streams are required.
+
+Use `sts render --job JOB_ID --loudnorm` to apply
+`loudnorm=I=-16:TP=-1.5:LRA=11` to each clip. The flag is saved for interrupted
+renders. Omit it to preserve the saved value or use `--no-loudnorm` to disable it.
+Rendering invokes no Whisper, spaCy, embedding, or LLM models.
+
+Clip caches live in `output/clips/clip_XXXX.mp4` with paired JSON checkpoints.
+Resume validates source size/mtime, clip settings, encoded-byte checksums, and
+stream metadata before reusing them. It rebuilds only missing, changed, or damaged
+clips. The concat manifest is `output/clips.txt`, with correctly quoted paths.
+Encoding and concatenation publish only complete, validated files by atomic
+replacement; failures preserve the previous complete destination.
+
+Subtitle export trims dialogue to each retained source interval and adds its
+cumulative position in the output. It uses probed clip lengths to avoid drift
+from frame rounding. UTF-8 text is retained and timestamps round to milliseconds.
+Silent fixture transcripts correctly produce an empty SRT file. Frame/AAC
+rounding can make the encoded movie slightly longer than the selection's nominal
+runtime. Each cut must match its requested length within 0.15 seconds; the movie
+must match the sum of probed clip lengths within 0.15 seconds.
+
+Rendering records clip progress and independent movie/subtitle checkpoints in
+`state.json`, becoming `done` only after both outputs are committed. Repeating the
+explicit `render` command reopens a completed render and reads any edits to
+`selected.json`, while reusing unaffected clips. Edited clips must match known
+source episodes and their bounds. The clip array controls their output order.
+
 ## Fixtures and checks
 
 `scripts/make_fixture.py` generates `tests/fixtures/ep_test.mp4` (90 seconds,
@@ -239,6 +276,11 @@ tests mock the transports; no test makes an external LLM request.
 Selection tests cover normalized weights, score density, chronological ordering,
 minimum lengths, protected endpoints, infeasible budgets, adjacent-only deduplication,
 the strict similarity threshold, saved settings, and cache/publication recovery.
+Rendering tests verify safe encoding commands, uniform media, quoted concat paths,
+subtitle trimming/offsets/Unicode/rounding, cache recovery, output publication
+failures, edited selections, optional loudnorm, and a real fully decoded FFmpeg join.
+The short media smoke test runs when FFmpeg and FFprobe are available; it needs
+no trained models or API calls.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 
@@ -255,8 +297,8 @@ The NLP smoke test uses synthetic dialogue to verify real spaCy character output
 MiniLM on first use; install the spaCy model during setup first.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 7, episodes, WAV/RMS files, transcripts,
+`output` directories. Through Phase 8, episodes, WAV/RMS files, transcripts,
 character/embedding/LLM checkpoints, `characters.json`, `scenes.json`, `scores.json`,
 `rolling_summary.json`, `selected.json`, and `state.json` are populated.
-No condensed video or subtitles are
-rendered yet.
+The explicit render command also populates the clip cache, concat manifest,
+`output/condensed_movie.mp4`, and `output/condensed.srt`.

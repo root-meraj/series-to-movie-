@@ -1,4 +1,4 @@
-"""Command-line processing through scene selection, plus job inspection."""
+"""Scene selection, explicit movie rendering, and saved-job inspection."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Column, Table
 
-from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
+from sts.pipeline.controller import get_status, list_jobs, render_saved_job, resume_job, run_job
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,6 +22,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--name")
     resume = commands.add_parser("resume", help="Resume a saved job through scene selection")
     resume.add_argument("--job", required=True)
+    render = commands.add_parser("render", help="Render or re-render from saved selected.json")
+    render.add_argument("--job", required=True)
+    render.add_argument(
+        "--loudnorm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Normalize clip audio (saved for interrupted render resumes)",
+    )
     for command in (run, resume):
         command.add_argument(
             "--stage",
@@ -31,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="Show state JSON or list all jobs")
     status.add_argument("--job")
     listing = commands.add_parser("list", help="List saved jobs")
-    for command in (run, resume, status, listing):
+    for command in (run, resume, render, status, listing):
         command.add_argument("--jobs-dir", type=Path, default=Path("data/jobs"))
     return parser
 
@@ -47,6 +55,7 @@ def _show_jobs(console: Console, jobs_dir: Path) -> None:
         "Baseline",
         "LLM",
         "Select",
+        "Render",
         "Episodes",
     )
     for state in list_jobs(jobs_dir=jobs_dir):
@@ -60,6 +69,7 @@ def _show_jobs(console: Console, jobs_dir: Path) -> None:
             state.stages.nlp.baseline.status,
             state.stages.nlp.llm.status,
             state.stages.select.status,
+            state.stages.render.status,
             str(state.stages.ingest.episode_count),
         )
     console.print(table)
@@ -86,6 +96,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "resume":
             state = resume_job(args.job, jobs_dir=args.jobs_dir, stage=args.stage)
+        elif args.command == "render":
+            state = render_saved_job(args.job, jobs_dir=args.jobs_dir, loudnorm=args.loudnorm)
+            console.print(
+                f"Job {state.job_id}: render done. "
+                f"Outputs: {args.jobs_dir / state.job_id / 'output' / 'condensed_movie.mp4'} "
+                "and condensed.srt.",
+                markup=False,
+            )
+            return 0
         elif args.command == "status" and args.job:
             state = get_status(args.job, jobs_dir=args.jobs_dir)
             console.print_json(state.model_dump_json(exclude_none=True))
