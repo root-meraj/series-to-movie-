@@ -324,6 +324,8 @@ class JobParams(ContractModel):
     min_scene_seconds: float = Field(default=5.0, gt=0)
     max_characters: int = Field(default=12, gt=0)
     sbert_model: str = Field(default="all-MiniLM-L6-v2", min_length=1)
+    min_clip_seconds: float | None = Field(default=None, gt=0)
+    score_weights: tuple[Seconds, Seconds, Seconds, Seconds] | None = None
     llm_provider: Literal["openai", "ollama", "mock"] | None = None
     llm_model: str | None = Field(default=None, min_length=1)
     ollama_base_url: str | None = None
@@ -331,6 +333,16 @@ class JobParams(ContractModel):
     zip_path: Path | None = None
     zip_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     name: str | None = None
+
+    @field_validator("score_weights")
+    @classmethod
+    def validate_weights(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        """Require a positive weight while supporting jobs predating selection."""
+        if value is not None and not any(value):
+            raise ValueError("score_weights must have a positive sum")
+        return value
 
 
 class StageState(ContractModel):
@@ -376,7 +388,7 @@ class JobStages(ContractModel):
     transcribe: EpisodeStageState = Field(default_factory=EpisodeStageState)
     scenes: EpisodeStageState = Field(default_factory=EpisodeStageState)
     nlp: NLPState = Field(default_factory=NLPState)
-    select: StageState = Field(default_factory=StageState)
+    select: EpisodeStageState = Field(default_factory=EpisodeStageState)
     render: StageState = Field(default_factory=StageState)
 
 

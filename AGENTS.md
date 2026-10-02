@@ -311,6 +311,51 @@ Phase 6 contract additions and clarifications (existing keys are unchanged):
   actual external LLM transport even in opt-in local-model smoke tests. Phase 6
   does not implement selection or rendering.
 
+Phase 7 contract additions and clarifications (existing keys are unchanged):
+
+- `state.params` adds `min_clip_seconds` (positive float) and `score_weights`
+  (four finite, nonnegative weights with at least one positive value, ordered
+  LLM, TextRank, audio RMS, dialogue ratio). New jobs save these settings. Older
+  jobs adopt and persist the current settings at their first selection attempt.
+  Resume uses saved settings and the saved SBERT model.
+- `state.stages.select` adds `completed` and `pending` episode IDs for embedding
+  validation/repair. Selection reuses the Phase 5 embedding JSON contracts,
+  checking model, cleaned-text hash, IDs, and vectors before reuse. Missing or
+  invalid caches are repaired one episode at a time and committed before state.
+  Valid caches, including those written immediately before a crash, require no
+  repeated model inference. Silent episodes need no embedding model.
+- `combine_scores(scenes, scores, cfg)` returns copies in scene order, preserving
+  all baseline/LLM fields. Every component is min-max normalized across the
+  season; constant components contribute zero. Weights are normalized to sum to
+  one. Missing LLM scores are an error when their weight is positive. Scene IDs
+  must be unique and scores must cover exactly the same IDs.
+- Selection reserves the complete chronological first and last scenes before
+  greedily filling the remaining budget by final score divided by clip duration.
+  Density ties prefer chronological order. Numeric episode order and scene start
+  determine output order; intervals within an episode cannot overlap. Actual
+  `end - start` bounds determine runtime, rather than rounded `duration` fields.
+- Forced season bookends take priority over minimum-length and duplicate filters.
+  Other clips shorter than MIN_CLIP_SECONDS are excluded. If complete bookends
+  cannot fit the target, selection fails with the minimum required runtime;
+  it never drops a bookend, trims a scene, or exceeds the budget. A singleton
+  counts once. Empty input to the standalone `select` function is valid, while
+  saved jobs require scenes matching a nonempty ingestion manifest.
+- Deduplication runs after chronological sorting and drops an optional clip only
+  when cosine similarity to the previously kept clip is strictly greater than
+  0.92. Silent scenes are never dialogue duplicates. A forced closing scene
+  removes preceding optional duplicates; identical forced bookends both survive.
+  Released time remains unused rather than rerunning the greedy fill.
+- `scores.json` receives `final_score` for every scene, preserving input scene
+  order. `selected.json` retains its original shape; `original_seconds` sums all
+  source scene intervals, and kept/dropped counts include all selection filters.
+  Final scoring and publication are one retryable unit. State becomes `done`
+  only after both artifacts are atomically written. Failures record a `select`
+  error and retain upstream NLP outputs; an already completed stage is skipped.
+- `run` and `resume` now default to `--stage select`, preserving all earlier stops,
+  including `--stage llm`. Rendering remains pending. The uncut three-episode
+  fixture has 90-second bookends, so Phase 7 fixture selection uses a three-minute
+  target; a two-minute target correctly reports an infeasible budget.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

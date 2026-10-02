@@ -114,6 +114,31 @@ def _cache_valid(path: Path, episode: str, model_name: str, inputs: list[tuple[s
         return False
 
 
+def episode_embeddings(
+    scenes: list[SceneRecord], job_dir: Path, model_name: str
+) -> SceneEmbeddingsDoc:
+    """Reuse or repair one episode's embedding contract for downstream scene selection.
+
+    The caller checkpoints progress after this returns. Even a cache committed
+    immediately before a crash can be reused after validating all current inputs.
+    """
+    if not scenes or len({scene.episode for scene in scenes}) != 1:
+        raise ValueError("Embedding cache requires exactly one nonempty episode")
+    episode = scenes[0].episode
+    inputs = _scene_inputs(scenes)
+    path = job_dir / "transcripts" / f"{episode}.embeddings.json"
+    if _cache_valid(path, episode, model_name, inputs):
+        return read_json(path, SceneEmbeddingsDoc)
+    document = SceneEmbeddingsDoc(
+        episode=episode,
+        model_name=model_name,
+        input_sha256=_input_hash(inputs),
+        embeddings=_embed_inputs(inputs, model_name),
+    )
+    write_json(path, document)
+    return document
+
+
 def build_baseline(job_dir: Path) -> JobState:
     """Checkpoint each episode's embeddings, then atomically write season-wide scores.json.
 

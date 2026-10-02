@@ -1,4 +1,4 @@
-"""Command-line processing through LLM scene scoring, plus job inspection."""
+"""Command-line processing through scene selection, plus job inspection."""
 
 from __future__ import annotations
 
@@ -16,17 +16,17 @@ from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sts", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="Create a job (through Phase 6: LLM scoring)")
+    run = commands.add_parser("run", help="Create a job (through Phase 7: scene selection)")
     run.add_argument("--zip", type=Path, required=True)
     run.add_argument("--target-minutes", type=float, default=None)
     run.add_argument("--name")
-    resume = commands.add_parser("resume", help="Resume a saved job through LLM scoring")
+    resume = commands.add_parser("resume", help="Resume a saved job through scene selection")
     resume.add_argument("--job", required=True)
     for command in (run, resume):
         command.add_argument(
             "--stage",
-            choices=["ingest", "transcribe", "scenes", "characters", "baseline", "llm"],
-            default="llm",
+            choices=["ingest", "transcribe", "scenes", "characters", "baseline", "llm", "select"],
+            default="select",
         )
     status = commands.add_parser("status", help="Show state JSON or list all jobs")
     status.add_argument("--job")
@@ -46,6 +46,7 @@ def _show_jobs(console: Console, jobs_dir: Path) -> None:
         "Characters",
         "Baseline",
         "LLM",
+        "Select",
         "Episodes",
     )
     for state in list_jobs(jobs_dir=jobs_dir):
@@ -58,6 +59,7 @@ def _show_jobs(console: Console, jobs_dir: Path) -> None:
             state.stages.nlp.characters.status,
             state.stages.nlp.baseline.status,
             state.stages.nlp.llm.status,
+            state.stages.select.status,
             str(state.stages.ingest.episode_count),
         )
     console.print(table)

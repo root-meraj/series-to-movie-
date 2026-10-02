@@ -5,10 +5,10 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 ## Current phase
 
-Phase 6 adds LLM scene scoring, cumulative episode summaries, and resume after
-each summary or scene response. Runs stop with baseline and LLM scores in
-`scores.json` and cumulative context in `rolling_summary.json`. Selection and
-rendering remain placeholders.
+Phase 7 adds weighted scene selection within a runtime budget, protects the
+season's first and last scenes, and removes adjacent dialogue duplicates.
+Runs write final scores to `scores.json` and chronological clips to
+`selected.json`. Rendering remains a placeholder.
 
 ## Development setup
 
@@ -34,7 +34,7 @@ python -m venv .venv
 ```
 
 On macOS/Linux, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
-These dependencies are sufficient through Phase 6. Install the complete
+These dependencies are sufficient through Phase 7. Install the complete
 pipeline dependencies with `python -m pip install -r requirements.txt` using the
 virtual environment when implementing subsequent phases. `pydantic-settings`
 is included for Pydantic 2 environment-backed settings.
@@ -49,11 +49,11 @@ spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
 
-## Process a season through LLM scoring
+## Process a season through scene selection
 
 ```powershell
 $env:LLM_PROVIDER = "mock"  # Offline fixture scoring; choose before creating a job.
-.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 2 --name "Fixture Show"
+.\.venv\Scripts\sts.exe run --zip tests/fixtures/show.zip --target-minutes 3 --name "Fixture Show"
 .\.venv\Scripts\sts.exe status --job JOB_ID
 .\.venv\Scripts\sts.exe resume --job JOB_ID
 .\.venv\Scripts\sts.exe list
@@ -62,10 +62,10 @@ $env:LLM_PROVIDER = "mock"  # Offline fixture scoring; choose before creating a 
 Alternatively, use `python -m sts.app.cli` with the virtual environment's Python.
 Each command accepts `--jobs-dir PATH` (default: `data/jobs`). Status without
 `--job` lists saved jobs. The CLI reports the generated job ID; logs go to stderr.
-Both `run` and `resume` default to `--stage llm`. To stop earlier, pass
+Both `run` and `resume` default to `--stage select`. To stop earlier, pass
 `--stage ingest`, `--stage transcribe`, `--stage scenes`, `--stage characters`, or
-`--stage baseline`. The job list shows progress through LLM scoring. Overall NLP
-becomes `done` after the LLM stage; selection and rendering remain pending.
+`--stage baseline` or `--stage llm`. The job list shows progress through selection.
+Overall NLP becomes `done` after LLM scoring; rendering remains pending.
 
 Use `LLM_PROVIDER=mock` for deterministic offline development. Its scores and
 summaries are canned test data. For OpenAI, configure `.env` with
@@ -153,7 +153,8 @@ between them. The silent fixture therefore correctly receives all-zero baselines
 These are text-centrality scores; audio and plot importance are added in later phases.
 
 `scores.json` preserves scene order and contains `baseline_score` for every scene.
-`final_score` remains zero until weighted selection. LLM fields are initially omitted.
+`final_score` remains zero until selection computes the weighted mix. LLM fields are
+initially omitted.
 `state.stages.nlp.baseline.status` becomes `done` only after scores are committed.
 As with earlier stages, a completed baseline is skipped on resume.
 
@@ -180,7 +181,33 @@ its summary is done, and which scenes are complete.
 
 Completed LLM scoring adds `llm_score`, `llm_plot_advance`, and `llm_reason` while
 preserving baseline values and scene order. `rolling_summary.json` retains the
-cumulative summary after each episode. No weighted final scoring occurs yet.
+cumulative summary after each episode.
+
+Selection min-max normalizes LLM, TextRank, audio RMS, and dialogue ratio across
+the season, then mixes them using `SCORE_WEIGHTS` (default `0.5,0.3,0.1,0.1`).
+Weights are normalized to sum to one; constant features contribute zero. Missing
+LLM scores are rejected when their weight is positive. `scores.json` receives
+the resulting `final_score` for every scene without changing its earlier scores.
+
+The selector reserves the complete first and last scenes, then greedily fits
+other scenes by score per second. Output follows numeric episode order and scene
+start time. Optional scenes shorter than `MIN_CLIP_SECONDS` (default 15) are
+excluded. After sorting, a dialogue clip with cosine similarity strictly above
+0.92 to the previously kept clip is removed. Silent clips remain valid. A
+closing scene removes preceding optional duplicates; forced bookends survive
+both filters. Deduplication may leave some of the budget unused.
+
+A target shorter than the combined bookends fails with the minimum required
+runtime. The synthetic fixture is uncut, so its first and last 90-second scenes
+require a three-minute target. A two-minute target cannot retain both whole scenes.
+The selector uses full scene intervals and never exceeds the runtime budget.
+
+New jobs save the weights and minimum clip length. Older jobs adopt current
+settings once at their first selection attempt. Selection reuses validated
+embedding checkpoints from baseline scoring and repairs missing, invalid, or
+stale caches one episode at a time. Final scores and `selected.json` are published
+before marking selection `done`. An interrupted publication resumes without
+repeating completed model inference. Completed selection is skipped on resume.
 
 ## Fixtures and checks
 
@@ -209,6 +236,9 @@ LLM tests use MockProvider to cover strict JSON types, fenced responses, retry
 limits, episode context, every model-call failure boundary, cache invalidation,
 and crashes between response persistence and state publication. Provider adapter
 tests mock the transports; no test makes an external LLM request.
+Selection tests cover normalized weights, score density, chronological ordering,
+minimum lengths, protected endpoints, infeasible budgets, adjacent-only deduplication,
+the strict similarity threshold, saved settings, and cache/publication recovery.
 
 Real-model integration smoke tests are skipped by default. Run them explicitly:
 
@@ -225,8 +255,8 @@ The NLP smoke test uses synthetic dialogue to verify real spaCy character output
 MiniLM on first use; install the spaCy model during setup first.
 
 Jobs are created beneath `data/jobs/` with `episodes`, `audio`, `transcripts`, and
-`output` directories. Through Phase 6, episodes, WAV/RMS files, transcripts,
+`output` directories. Through Phase 7, episodes, WAV/RMS files, transcripts,
 character/embedding/LLM checkpoints, `characters.json`, `scenes.json`, `scores.json`,
-`rolling_summary.json`, and `state.json` are populated.
+`rolling_summary.json`, `selected.json`, and `state.json` are populated.
 No condensed video or subtitles are
 rendered yet.

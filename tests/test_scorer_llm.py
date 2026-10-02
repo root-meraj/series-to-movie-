@@ -499,19 +499,19 @@ def test_legacy_job_adopts_provider_settings_once(
     write_json(baseline_job / "state.json", state)
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("LLM_MODEL", "legacy-mock")
-    state = resume_job(state.job_id)
+    state = resume_job(state.job_id, stage="llm")
     assert state.params.llm_provider == "mock" and state.params.llm_model == "legacy-mock"
     assert state.stages.nlp.status == "done"
 
 
-def test_cli_default_finishes_nlp_and_repeated_resume_is_idempotent(
+def test_cli_llm_stop_finishes_nlp_and_repeated_resume_is_idempotent(
     baseline_job: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """CLI default reaches LLM scoring with persisted mock settings and skips completed NLP."""
-    assert main(["resume", "--job", baseline_job.name]) == 0
+    """Explicit LLM stop uses persisted mock settings and skips completed NLP."""
+    assert main(["resume", "--job", baseline_job.name, "--stage", "llm"]) == 0
     assert "llm done" in capsys.readouterr().out
     paths = [baseline_job / name for name in ("scores.json", "state.json", "rolling_summary.json")]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    assert main(["resume", "--job", baseline_job.name]) == 0
+    assert main(["resume", "--job", baseline_job.name, "--stage", "llm"]) == 0
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
