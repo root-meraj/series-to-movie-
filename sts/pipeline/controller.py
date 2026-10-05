@@ -146,6 +146,8 @@ def create_job(
         whisper_model=settings.whisper_model,
         whisper_device=settings.whisper_device,
         whisper_compute=settings.whisper_compute,
+        transcript_source=settings.transcript_source,
+        subtitle_language=settings.subtitle_language,
         detector_threshold=settings.detector_threshold,
         min_scene_seconds=settings.min_scene_seconds,
         max_characters=settings.max_characters,

@@ -6,6 +6,7 @@ import html
 import logging
 from functools import partial
 from pathlib import Path
+from time import time
 from types import MappingProxyType
 from zipfile import BadZipFile
 
@@ -160,6 +161,13 @@ _ENGINES = MappingProxyType(
         "Ollama · local model": "ollama",
     }
 )
+_DIALOGUE_SOURCES = MappingProxyType(
+    {
+        "Automatic · use subtitles first": "auto",
+        "Embedded subtitles only": "subtitles",
+        "Whisper · transcribe audio": "whisper",
+    }
+)
 _STAGES = (
     ("ingest", "Import episodes"),
     ("transcribe", "Capture dialogue"),
@@ -217,6 +225,12 @@ def _fraction(stage: StageState) -> float:
 
 def _stage_progress(state: JobState, name: str) -> float:
     stage = getattr(state.stages, name)
+    if name == "transcribe" and stage.status != "done":
+        current = getattr(stage, "current", None)
+        total = len(stage.completed) + len(stage.pending)
+        if current and current.episode in stage.pending and current.duration > 0 and total:
+            fraction = min(0.99, current.processed_seconds / current.duration)
+            return (len(stage.completed) + fraction) / total
     if name == "nlp" and stage.status != "done":
         return sum(_fraction(getattr(stage, key)) for key in ("characters", "baseline", "llm")) / 3
     if name == "render" and stage.status != "done":
@@ -244,6 +258,49 @@ def _stage_detail(state: JobState, name: str) -> str:
         unit = "clips" if name == "render" else "episodes"
         return f"{len(completed)} of {len(completed) + len(pending)} {unit}"
     return "Working" if stage.status == "in_progress" else "Waiting"
+
+
+def _transcription_activity(state: JobState, directory: Path, *, running: bool) -> str | None:
+    stage = state.stages.transcribe
+    if not running or stage.status != "in_progress" or not stage.pending:
+        return None
+    episode = stage.pending[0]
+    current = getattr(stage, "current", None)
+    if current is not None:
+        episode = current.episode
+        if current.activity == "extracting_subtitles":
+            return f"Extracting timed subtitles from {episode}."
+        if current.activity == "extracting_audio":
+            return f"Preparing audio for {episode}."
+        if current.activity == "loading_model":
+            return f"Loading Whisper {state.params.whisper_model} for {episode}."
+    source = next(
+        (item for item in state.stages.ingest.episodes if item.episode == episode), None
+    )
+    audio_path = directory / "audio" / f"{episode}.wav"
+    try:
+        metadata = audio_path.stat()
+    except OSError:
+        return f"Preparing audio for {episode}. Counters advance after each episode finishes."
+    if metadata.st_size <= 0:
+        return f"Preparing audio for {episode}. Counters advance after each episode finishes."
+    minutes = f" · {source.duration / 60:.1f} min of source audio" if source else ""
+    age_minutes = max(0, int((time() - metadata.st_mtime) / 60))
+    device = "automatic device selection" if state.params.whisper_device == "auto" else (
+        state.params.whisper_device.upper()
+    )
+    decoded = (
+        f"Decoded {current.processed_seconds / 60:.1f} of {current.duration / 60:.1f} min. "
+        if current is not None
+        else ""
+    )
+    return (
+        f"Transcribing {episode}{minutes} · Whisper {state.params.whisper_model} on {device}. "
+        f"Audio prepared {age_minutes} min ago. "
+        f"{decoded}"
+        "Episode counters update after the whole episode finishes. "
+        + ("Long episodes can take over an hour on CPU." if device == "CPU" else "")
+    )
 
 
 def _sidebar(runner: JobRunner, states: list[JobState]) -> None:
@@ -402,6 +459,17 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                 "Preview mode uses sample scores. Choose a configured model for story-aware edits."
             )
         with st.expander("Advanced settings"):
+            dialogue_source = st.selectbox(
+                "Dialogue source",
+                list(_DIALOGUE_SOURCES),
+                index=list(_DIALOGUE_SOURCES.values()).index(settings.transcript_source),
+                key="transcript_source",
+                help=(
+                    "Automatic uses timestamped embedded text subtitles first and falls back "
+                    "to Whisper audio transcription. Embedded subtitles only requires a usable "
+                    "text subtitle track. Whisper transcribes the episode audio."
+                ),
+            )
             device = st.selectbox(
                 "Processing device",
                 ["CPU", "Automatic", "GPU · CUDA"],
@@ -409,11 +477,17 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                 key="processing_device",
                 help="CPU works without GPU libraries. CUDA requires a configured NVIDIA runtime.",
             )
-            st.caption("CPU is the default for reliable local processing.")
+            st.caption(
+                "CUDA is configured for this workspace."
+                if settings.whisper_device == "cuda"
+                else "CPU is the default for reliable local processing."
+            )
             if engine != "mock":
                 model = st.text_input("Model", value=settings.llm_model, key="editorial_model")
                 st.caption(
-                    "Provider access and credentials come from your local .env configuration."
+                    "Ollama runs on this computer and needs no API key. Use an installed model."
+                    if engine == "ollama"
+                    else "Provider access and credentials come from your local .env configuration."
                 )
         blocked_reason = (
             "An edit is processing. You can create another when it finishes."
@@ -455,6 +529,7 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                     "llm_model": model.strip(),
                     "whisper_device": compute_device,
                     "whisper_compute": "int8" if compute_device == "cpu" else "auto",
+                    "transcript_source": _DIALOGUE_SOURCES[dialogue_source],
                 }
             )
             if local_path is not None:
@@ -566,7 +641,16 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
     )
     episodes = state.stages.ingest.episode_count
     kept = str(selection.stats.scenes_kept) if selection else "—"
-    original = f"{selection.stats.original_seconds / 60:g} min" if selection else "—"
+    original_seconds = (
+        selection.stats.original_seconds
+        if selection
+        else sum(item.duration for item in state.stages.ingest.episodes)
+    )
+    original = (
+        f"{original_seconds / 3600:.1f} h"
+        if original_seconds >= 3600
+        else f"{original_seconds / 60:g} min" if original_seconds else "—"
+    )
     _html(
         '<div class="stats">'
         f'<div class="stat"><label>Episodes</label><strong>{episodes:02d}</strong></div>'
@@ -613,6 +697,10 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
                 f'<span class="stage-detail">{_stage_detail(state, key)}</span></div>'
             )
             st.progress(_stage_progress(state, key))
+            if key == "transcribe":
+                activity = _transcription_activity(state, directory, running=running)
+                if activity:
+                    st.info(activity, icon=":material/graphic_eq:")
         st.caption(
             "Updated automatically while processing."
             if running

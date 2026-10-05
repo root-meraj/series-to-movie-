@@ -121,7 +121,8 @@ def _post_ollama(url: str, payload: dict[str, object]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=120.0) as response:
+        # Cold local CUDA startup and a full episode summary can exceed two minutes.
+        with urlopen(request, timeout=300.0) as response:
             data = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         raise ProviderError(
@@ -147,13 +148,19 @@ class OllamaProvider(LLMProvider):
         self._model = cfg.llm_model
 
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
-        """Request JSON from Ollama and reject truncated or missing message content."""
+        """Request bounded answers, using 32K context without thinking for Qwen3 models."""
+        options = {"temperature": 0, "num_predict": 2000}
         payload: dict[str, object] = {
             "model": self._model,
             "stream": False,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "options": {"temperature": 0, "num_predict": 2000},
+            "options": options,
         }
+        if self._model.rsplit("/", 1)[-1].split(":", 1)[0].casefold() == "qwen3":
+            # Qwen3 otherwise spends the response budget on a separate thinking
+            # channel, potentially leaving no JSON in message.content.
+            payload["think"] = False
+            options["num_ctx"] = 32768
         if json_mode:
             payload["format"] = "json"
         data = _post_ollama(self._url, payload)

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import shutil
 import subprocess
+import sys
+import sysconfig
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from time import monotonic
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,11 +21,13 @@ from numpy.typing import NDArray
 from pydantic import ValidationError
 
 from sts.config import Settings
+from sts.pipeline.subtitles import extract_subtitles
 from sts.schemas import (
     AudioFeaturesDoc,
     ErrorRecord,
     JobState,
     TranscriptDoc,
+    TranscriptionProgress,
     TranscriptSegment,
     read_json,
     write_json,
@@ -34,7 +41,24 @@ if TYPE_CHECKING:
 _MODEL: tuple[tuple[str, str, str], WhisperModel] | None = None
 
 
+def _prepare_cuda_runtime(cfg: Settings) -> None:
+    if sys.platform != "win32" or cfg.whisper_device == "cpu":
+        return
+    # CTranslate2's backend uses Windows LoadLibrary, which needs these wheels on
+    # the process PATH even when Python's add_dll_directory has been called.
+    site = Path(sysconfig.get_path("purelib")) / "nvidia"
+    directories = [site / vendor / "bin" for vendor in ("cublas", "cuda_nvrtc", "cudnn")]
+    available = [str(path) for path in directories if path.is_dir() and any(path.glob("*.dll"))]
+    if available:
+        existing = os.environ.get("PATH", "").split(os.pathsep)
+        known = {value.casefold() for value in existing}
+        additions = [value for value in available if value.casefold() not in known]
+        if additions:
+            os.environ["PATH"] = os.pathsep.join([*additions, *existing])
+
+
 def _create_model(cfg: Settings) -> WhisperModel:
+    _prepare_cuda_runtime(cfg)
     from faster_whisper import WhisperModel
 
     return WhisperModel(
@@ -50,9 +74,23 @@ def _get_model(cfg: Settings) -> WhisperModel:
             "transcribe unit-progress: loading Whisper %s (%s/%s)", *key
         )
         # Release an old model before allocating its replacement.
-        _MODEL = None
+        if _MODEL is not None:
+            release_model()
         _MODEL = (key, _create_model(cfg))
     return _MODEL[1]
+
+
+def release_model() -> None:
+    """Release the completed ASR stage's model, including a registered UI resource cache.
+
+    Freeing GPU memory lets the subsequent local story model use a small graphics card.
+    Call only after transcription has finished; active decoder objects must remain alive.
+    """
+    global _MODEL
+    _MODEL = None
+    clear = getattr(_create_model, "clear", None)
+    if callable(clear):
+        clear()
 
 
 def extract_audio(video_path: Path, audio_path: Path) -> Path:
@@ -142,11 +180,41 @@ def _filter_segments(segments: list[Segment], duration: float) -> list[Transcrip
     return accepted
 
 
-def transcribe_episode(audio_path: Path, out_path: Path, cfg: Settings) -> TranscriptDoc:
+def _track_segments(
+    segments: Iterable[Segment],
+    episode: str,
+    duration: float,
+    progress: Callable[[TranscriptionProgress], None] | None,
+) -> Iterator[Segment]:
+    processed = 0.0
+    for segment in segments:
+        if progress is not None and math.isfinite(segment.end):
+            position = max(processed, min(duration, max(0.0, float(segment.end))))
+            if position > processed:
+                processed = position
+                progress(
+                    TranscriptionProgress(
+                        episode=episode,
+                        activity="decoding",
+                        duration=duration,
+                        processed_seconds=processed,
+                    )
+                )
+        yield segment
+
+
+def transcribe_episode(
+    audio_path: Path,
+    out_path: Path,
+    cfg: Settings,
+    *,
+    progress: Callable[[TranscriptionProgress], None] | None = None,
+) -> TranscriptDoc:
     """Decode a WAV once, transcribe it, and atomically save transcript and RMS JSON.
 
     The RMS sidecar is written beside the WAV as E##.rms.json. Empty transcripts
-    are valid. Job progress is committed by transcribe_job after both files exist.
+    are valid. The optional callback reports live decoding position while immediately
+    materializing Whisper's generator. An episode is committed only after both files exist.
     """
     wav, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
     if sample_rate != 16000 or wav.ndim != 1 or len(wav) == 0:
@@ -154,14 +222,28 @@ def transcribe_episode(audio_path: Path, out_path: Path, cfg: Settings) -> Trans
     if not np.isfinite(wav).all():
         raise ValueError("Audio samples must all be finite")
     features = _rms_features(audio_path.stem, wav, sample_rate)
+    if progress is not None:
+        progress(
+            TranscriptionProgress(
+                episode=audio_path.stem, activity="loading_model", duration=features.duration
+            )
+        )
     model = _get_model(cfg)
+    if progress is not None:
+        progress(
+            TranscriptionProgress(
+                episode=audio_path.stem, activity="decoding", duration=features.duration
+            )
+        )
     segments, info = model.transcribe(
         wav, word_timestamps=False, vad_filter=True, condition_on_previous_text=False
     )
-    segments = list(segments)  # Materialize immediately: decoding errors occur during iteration.
+    # Materialize immediately: progress reports do not defer decoding or publish partial dialogue.
+    segments = list(_track_segments(segments, audio_path.stem, features.duration, progress))
     document = TranscriptDoc(
         episode=audio_path.stem,
         language=info.language,
+        source="whisper",
         segments=_filter_segments(segments, features.duration),
     )
     write_json(audio_path.with_suffix(".rms.json"), features)
@@ -175,7 +257,28 @@ def transcribe_episode(audio_path: Path, out_path: Path, cfg: Settings) -> Trans
     return document
 
 
-def _completed_artifacts_valid(job_dir: Path, episode: str) -> bool:
+def _save_subtitle_episode(audio_path: Path, out_path: Path, document: TranscriptDoc) -> None:
+    wav, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+    if sample_rate != 16000 or wav.ndim != 1 or len(wav) == 0 or not np.isfinite(wav).all():
+        raise ValueError("Subtitle features require nonempty finite 16 kHz mono audio")
+    features = _rms_features(audio_path.stem, wav, sample_rate)
+    document = TranscriptDoc(
+        episode=document.episode,
+        language=document.language,
+        source="embedded_subtitles",
+        segments=[
+            TranscriptSegment(
+                start=segment.start, end=min(segment.end, features.duration), text=segment.text
+            )
+            for segment in document.segments
+            if segment.start < min(segment.end, features.duration)
+        ],
+    )
+    write_json(audio_path.with_suffix(".rms.json"), features)
+    write_json(out_path, document)
+
+
+def _completed_artifacts_valid(job_dir: Path, episode: str, cfg: Settings) -> bool:
     try:
         transcript = read_json(
             job_dir / "transcripts" / f"{episode}.transcript.json", TranscriptDoc
@@ -184,6 +287,13 @@ def _completed_artifacts_valid(job_dir: Path, episode: str) -> bool:
         audio = sf.info(job_dir / "audio" / f"{episode}.wav")
         return (
             transcript.episode == episode
+            and (
+                cfg.transcript_source == "auto"
+                or cfg.transcript_source == "subtitles"
+                and transcript.source == "embedded_subtitles"
+                or cfg.transcript_source == "whisper"
+                and transcript.source != "embedded_subtitles"
+            )
             and features.episode == episode
             and audio.samplerate == 16000
             and audio.channels == 1
@@ -196,7 +306,7 @@ def _completed_artifacts_valid(job_dir: Path, episode: str) -> bool:
 
 
 def transcribe_job(job_dir: Path) -> JobState:
-    """Transcribe unfinished episodes using saved settings and checkpoint each success."""
+    """Import timed subtitles or transcribe unfinished episodes, checkpointing each success."""
     logger = logging.getLogger(__name__)
     state_path = job_dir / "state.json"
     state = read_json(state_path, JobState)
@@ -207,6 +317,7 @@ def transcribe_job(job_dir: Path) -> JobState:
     episode: str | None = None
     try:
         stage.status = "in_progress"
+        stage.current = None
         write_json(state_path, state)
         logger.info("transcribe started: %s", state.job_id)
         if state.stages.ingest.status != "done" or not state.stages.ingest.episodes:
@@ -215,13 +326,16 @@ def transcribe_job(job_dir: Path) -> JobState:
             whisper_model=state.params.whisper_model,
             whisper_device=state.params.whisper_device,
             whisper_compute=state.params.whisper_compute,
+            transcript_source=state.params.transcript_source,
+            subtitle_language=state.params.subtitle_language,
         )
         episodes = sorted(state.stages.ingest.episodes, key=lambda item: item.episode_number)
         planned = [item.episode for item in episodes]
         stage.completed = [
             identifier
             for identifier in planned
-            if identifier in stage.completed and _completed_artifacts_valid(job_dir, identifier)
+            if identifier in stage.completed
+            and _completed_artifacts_valid(job_dir, identifier, cfg)
         ]
         stage.pending = [identifier for identifier in planned if identifier not in stage.completed]
         write_json(state_path, state)
@@ -230,15 +344,56 @@ def transcribe_job(job_dir: Path) -> JobState:
             if episode in stage.completed:
                 logger.info("transcribe unit-progress: %s already complete", episode)
                 continue
+            subtitles = None
+            if cfg.transcript_source != "whisper":
+                stage.current = TranscriptionProgress(
+                    episode=episode, activity="extracting_subtitles", duration=item.duration
+                )
+                write_json(state_path, state)
+                subtitles = extract_subtitles(
+                    item.source_path, episode, item.duration, language=cfg.subtitle_language
+                )
+                if subtitles is None and cfg.transcript_source == "subtitles":
+                    raise ValueError(
+                        f"No usable {cfg.subtitle_language} text subtitles found for {episode}. "
+                        "Choose Automatic or Whisper to transcribe its audio."
+                    )
             logger.info("transcribe unit-progress: %s extracting audio", episode)
+            stage.current = TranscriptionProgress(
+                episode=episode, activity="extracting_audio", duration=item.duration
+            )
+            write_json(state_path, state)
             audio_path = job_dir / "audio" / f"{episode}.wav"
             extract_audio(item.source_path, audio_path)
-            transcribe_episode(
-                audio_path, job_dir / "transcripts" / f"{episode}.transcript.json", cfg
-            )
+            last_write = float("-inf")
+
+            def update_progress(current: TranscriptionProgress) -> None:
+                nonlocal last_write
+                changed_activity = (
+                    stage.current is None or stage.current.activity != current.activity
+                )
+                stage.current = current
+                now = monotonic()
+                if changed_activity or now - last_write >= 5.0:
+                    write_json(state_path, state)
+                    last_write = now
+
+            out_path = job_dir / "transcripts" / f"{episode}.transcript.json"
+            if subtitles is not None:
+                document, stream_index = subtitles
+                _save_subtitle_episode(audio_path, out_path, document)
+                logger.info(
+                    "transcribe unit-progress: %s imported %d subtitle cues from stream %d",
+                    episode,
+                    len(document.segments),
+                    stream_index,
+                )
+            else:
+                transcribe_episode(audio_path, out_path, cfg, progress=update_progress)
             completed = set(stage.completed) | {episode}
             stage.completed = [identifier for identifier in planned if identifier in completed]
             stage.pending = [identifier for identifier in planned if identifier not in completed]
+            stage.current = None
             write_json(state_path, state)
             logger.info(
                 "transcribe unit-progress: %s done (%d/%d)",
@@ -249,6 +404,7 @@ def transcribe_job(job_dir: Path) -> JobState:
         stage.status = "done"
         write_json(state_path, state)
         logger.info("transcribe done: %d episodes", len(stage.completed))
+        release_model()
         return state
     except Exception as exc:
         stage.status = "failed"

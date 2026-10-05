@@ -239,6 +239,8 @@ def test_ollama_adapter_disables_streaming_and_uses_mock_transport(
         assert url == "http://localhost:11434/api/chat"
         assert payload["model"] == "local-editor" and payload["stream"] is False
         assert payload.get("format") == ("json" if json_mode else None)
+        assert "think" not in payload
+        assert payload["options"] == {"temperature": 0, "num_predict": 2000}
         messages = payload["messages"]
         content = mock.complete(messages[0]["content"], messages[1]["content"], json_mode)
         return {"done": True, "done_reason": "stop", "message": {"content": content}}
@@ -246,6 +248,88 @@ def test_ollama_adapter_disables_streaming_and_uses_mock_transport(
     monkeypatch.setattr(llm, "_post_ollama", post)
     adapter = llm.create_provider(Settings(llm_provider="ollama", llm_model="local-editor"))
     assert adapter.complete("Editor", "Scene", json_mode) == _score()
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+@pytest.mark.parametrize(
+    "model, qwen3",
+    [
+        ("qwen3:1.7b", True),
+        ("qwen3", True),
+        ("registry.ollama.ai/library/qwen3:1.7b", True),
+        ("localhost:5000/team/QwEn3:latest", True),
+        ("qwen2.5:1.5b", False),
+        ("qwen3-vl:2b", False),
+        ("library/custom-qwen3:latest", False),
+    ],
+)
+def test_ollama_qwen3_uses_long_context_without_thinking_and_preserves_other_models(
+    monkeypatch: pytest.MonkeyPatch, model: str, qwen3: bool, json_mode: bool
+) -> None:
+    """Only exact Qwen3 models request 32K context and omit the separate thinking channel."""
+    mock = llm.MockProvider([_score()])
+    system, user = "Story editor", "Scene dialogue"
+
+    def post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert url == "http://localhost:11434/api/chat"
+        assert payload["model"] == model
+        assert payload["stream"] is False
+        assert payload.get("format") == ("json" if json_mode else None)
+        assert payload["messages"] == [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        expected_options = {"temperature": 0, "num_predict": 2000}
+        if qwen3:
+            assert payload["think"] is False
+            expected_options["num_ctx"] = 32768
+        else:
+            assert "think" not in payload
+        assert payload["options"] == expected_options
+        content = mock.complete(system, user, json_mode)
+        return {"done": True, "done_reason": "stop", "message": {"content": content}}
+
+    monkeypatch.setattr(llm, "_post_ollama", post)
+    adapter = llm.create_provider(Settings(llm_provider="ollama", llm_model=model))
+    assert isinstance(adapter, llm.LLMProvider)
+    assert adapter.complete(system, user, json_mode) == _score()
+    assert mock.calls == [(system, user, json_mode)]
+
+
+def test_qwen3_long_episode_payload_keeps_all_dialogue_and_retries_invalid_scene_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long Unicode dialogue reaches the provider intact while score validation stays strict."""
+    dialogue = "उसे घर लौटकर परिवार को सच बताना होगा। " * 1200
+    scene = _scene(1).model_copy(update={"transcript": dialogue})
+    summary = "A family confronts an important hidden truth."
+    invalid_score = json.loads(_score())
+    invalid_score["score"] = "8"
+    mock = llm.MockProvider([json.dumps({"summary": summary}), json.dumps(invalid_score), _score()])
+
+    def post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert payload["think"] is False
+        assert payload["options"]["num_ctx"] == 32768
+        assert payload["options"]["num_predict"] == 2000
+        assert payload["stream"] is False and payload["format"] == "json"
+        system, user = payload["messages"]
+        content = mock.complete(system["content"], user["content"], json_mode=True)
+        return {"done": True, "done_reason": "stop", "message": {"content": content}}
+
+    monkeypatch.setattr(llm, "_post_ollama", post)
+    scores, updated_summary = llm.score_scenes(
+        [scene],
+        CharacterTable(),
+        "Earlier context.",
+        Settings(llm_provider="ollama", llm_model="qwen3:1.7b"),
+    )
+    assert updated_summary == summary and scores[0].llm_score == 8
+    assert len(mock.calls) == 3
+    episode_data = json.loads(mock.calls[0][1].split("\nStory data:\n", 1)[1])
+    assert episode_data["scenes"][0]["transcript"] == dialogue
+    assert episode_data["story_so_far"] == "Earlier context."
+    assert dialogue in mock.calls[1][1] and dialogue in mock.calls[2][1]
+    assert all(json_mode for _, _, json_mode in mock.calls)
 
 
 @pytest.mark.parametrize("finish", ["length", "content_filter", "missing", "refusal"])

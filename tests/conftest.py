@@ -55,6 +55,9 @@ def prevent_real_models(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
         raise AssertionError("Unit tests must mock SentenceTransformer")
 
     monkeypatch.setattr(transcribe, "_MODEL", None)
+    # Model-focused unit tests use synthetic video bytes. Subtitle tests replace
+    # this seam explicitly or exercise the extractor module with their own media doubles.
+    monkeypatch.setattr(transcribe, "extract_subtitles", lambda *args, **kwargs: None)
     monkeypatch.setattr(transcribe, "_create_model", fail_model)
     monkeypatch.setattr(ner, "_NLP", None)
     monkeypatch.setattr(ner, "_create_nlp", fail_ner)

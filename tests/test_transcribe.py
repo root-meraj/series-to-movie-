@@ -17,7 +17,14 @@ from sts.app.cli import main
 from sts.config import Settings
 from sts.pipeline import transcribe
 from sts.pipeline.controller import get_status, list_jobs, resume_job, run_job
-from sts.schemas import AudioFeaturesDoc, JobState, TranscriptDoc, read_json, write_json
+from sts.schemas import (
+    AudioFeaturesDoc,
+    JobState,
+    TranscriptDoc,
+    TranscriptionProgress,
+    read_json,
+    write_json,
+)
 
 
 @dataclass
@@ -46,6 +53,8 @@ class _Model:
         self.calls: list[tuple[NDArray[np.float32], dict[str, bool]]] = []
         self.fail_on_call: int | None = None
         self.exhausted = False
+        self.before_segment: Callable[[int, _Segment], None] | None = None
+        self.after_segment: Callable[[int, _Segment], None] | None = None
 
     def transcribe(
         self, wav: NDArray[np.float32], **options: bool
@@ -57,7 +66,12 @@ class _Model:
         def generate() -> Iterator[_Segment]:
             if self.fail_on_call == len(self.calls):
                 raise RuntimeError("simulated Whisper decoding failure")
-            yield from self.segments
+            for index, segment in enumerate(self.segments):
+                if self.before_segment is not None:
+                    self.before_segment(index, segment)
+                yield segment
+                if self.after_segment is not None:
+                    self.after_segment(index, segment)
             self.exhausted = True
 
         return generate(), _Info(self)
@@ -103,7 +117,10 @@ def ingested_job(
     """Create an ingested three-episode season with frozen nondefault Whisper settings."""
     return run_job(
         make_zip([("ep3.mp4", b"three"), ("ep1.mp4", b"one"), ("ep2.mp4", b"two")]),
-        cfg=Settings(whisper_model="tiny", whisper_device="cpu", whisper_compute="int8"),
+        cfg=Settings(
+            whisper_model="tiny", whisper_device="cpu", whisper_compute="int8",
+            transcript_source="whisper",
+        ),
         stage="ingest",
     )
 
@@ -151,6 +168,80 @@ def test_filters_hallucinations_and_consecutive_duplicates(audio: Path, model: _
         "Hello there.",
         "Exact thresholds stay.",
         "Hello there.",
+    ]
+
+
+def test_live_progress_includes_filtered_segments_before_artifact_commit(
+    audio: Path, model: _Model
+) -> None:
+    """Decoding advances for discarded speech while publication waits for full consumption."""
+    model.segments = [
+        _Segment(0, 1, "Retained"),
+        _Segment(1, 2, "RETAINED"),
+        _Segment(2, 3, "Music", no_speech_prob=0.9),
+        _Segment(3, 4, "Uncertain", avg_logprob=-2.0),
+        _Segment(4, 5, " "),
+    ]
+    output = audio.parent / "result.json"
+    updates: list[TranscriptionProgress] = []
+
+    def observe(current: TranscriptionProgress) -> None:
+        assert not output.exists()
+        assert not audio.with_suffix(".rms.json").exists()
+        assert not model.exhausted
+        updates.append(current)
+
+    document = transcribe.transcribe_episode(audio, output, Settings(), progress=observe)
+    assert model.exhausted
+    assert [segment.text for segment in document.segments] == ["Retained"]
+    assert [(update.activity, update.processed_seconds) for update in updates] == [
+        ("loading_model", 0.0),
+        ("decoding", 0.0),
+        ("decoding", 1.0),
+        ("decoding", 2.0),
+        ("decoding", 3.0),
+        ("decoding", 4.0),
+        ("decoding", 5.0),
+    ]
+    assert all(update.episode == "E01" and update.duration == 10.0 for update in updates)
+
+
+def test_live_progress_is_finite_monotonic_and_clamped(audio: Path, model: _Model) -> None:
+    """Bad or regressing Whisper timestamps cannot move the visible position backwards."""
+    model.segments = [
+        _Segment(0, -1, "Negative"),
+        _Segment(0, float("nan"), "Invalid"),
+        _Segment(0, float("inf"), "Infinite"),
+        _Segment(0, 3, "First"),
+        _Segment(1, 2, "Regresses"),
+        _Segment(3, 15, "Beyond duration", no_speech_prob=0.9),
+        _Segment(4, 6, "Regresses again"),
+    ]
+    updates: list[TranscriptionProgress] = []
+    transcribe.transcribe_episode(
+        audio, audio.parent / "result.json", Settings(), progress=updates.append
+    )
+    assert [item.processed_seconds for item in updates if item.activity == "decoding"] == [
+        0.0,
+        3.0,
+        10.0,
+    ]
+    assert all(0.0 <= item.processed_seconds <= item.duration == 10.0 for item in updates)
+
+
+def test_empty_generator_reports_activity_without_inventing_decoding_progress(
+    audio: Path, model: _Model
+) -> None:
+    """An empty VAD result can complete without claiming that a speech segment was decoded."""
+    model.segments = []
+    updates: list[TranscriptionProgress] = []
+    document = transcribe.transcribe_episode(
+        audio, audio.parent / "result.json", Settings(), progress=updates.append
+    )
+    assert document.segments == []
+    assert [(item.activity, item.processed_seconds) for item in updates] == [
+        ("loading_model", 0.0),
+        ("decoding", 0.0),
     ]
 
 
@@ -292,6 +383,13 @@ def test_mid_season_resume_preserves_completed_episode_and_saved_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """After E02 fails, resume processes E02/E03 and keeps E01 plus its original settings."""
+    loads: list[tuple[str, str, str]] = []
+
+    def create(cfg: Settings) -> _Model:
+        loads.append((cfg.whisper_model, cfg.whisper_device, cfg.whisper_compute))
+        return model
+
+    monkeypatch.setattr(transcribe, "_create_model", create)
     model.fail_on_call = 2
     with pytest.raises(RuntimeError, match="decoding failure"):
         resume_job(ingested_job.job_id, stage="transcribe")
@@ -319,9 +417,215 @@ def test_mid_season_resume_preserves_completed_episode_and_saved_settings(
     assert len(resumed.errors) == 1
     assert extraction_calls == ["E01", "E02", "E02", "E03"]
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == previous
-    assert transcribe._MODEL[0] == ("tiny", "cpu", "int8")
+    assert loads == [("tiny", "cpu", "int8")]
+    assert transcribe._MODEL is None
     for stage in ("scenes", "nlp", "select", "render"):
         assert getattr(resumed.stages, stage).status == "pending"
+
+
+def test_current_episode_is_visible_during_generator_consumption_and_cleared_after_commit(
+    ingested_job: JobState,
+    model: _Model,
+    extraction_calls: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UI polling sees live work without treating uncommitted dialogue as a completed unit."""
+    directory = Path("data/jobs") / ingested_job.job_id
+    model.segments = [_Segment(0, 1, "First"), _Segment(1, 2, "Second")]
+    clock = [0.0]
+    monkeypatch.setattr(transcribe, "monotonic", lambda: clock[0])
+    original_extract = transcribe.extract_audio
+    original_write = transcribe.write_json
+    observed: list[tuple[str, float]] = []
+    committed: list[str] = []
+
+    def extract(video_path: Path, audio_path: Path) -> Path:
+        current = get_status(ingested_job.job_id).stages.transcribe.current
+        assert current is not None
+        assert current.episode == video_path.stem
+        assert current.activity == "extracting_audio"
+        assert current.processed_seconds == 0.0
+        assert current.duration == ingested_job.stages.ingest.episodes[0].duration
+        return original_extract(video_path, audio_path)
+
+    def before_segment(index: int, segment: _Segment) -> None:
+        clock[0] += 5.0
+
+    def after_segment(index: int, segment: _Segment) -> None:
+        state = get_status(ingested_job.job_id)
+        current = state.stages.transcribe.current
+        assert current is not None and current.activity == "decoding"
+        assert current.processed_seconds == segment.end
+        assert current.duration == 3.0
+        assert current.episode in state.stages.transcribe.pending
+        assert current.episode not in state.stages.transcribe.completed
+        assert not (directory / f"transcripts/{current.episode}.transcript.json").exists()
+        assert not (directory / f"audio/{current.episode}.rms.json").exists()
+        observed.append((current.episode, current.processed_seconds))
+
+    def write(path: Path, document: object) -> None:
+        if isinstance(document, JobState):
+            for episode in document.stages.transcribe.completed:
+                if episode not in committed:
+                    assert document.stages.transcribe.current is None
+                    assert (directory / f"transcripts/{episode}.transcript.json").exists()
+                    assert (directory / f"audio/{episode}.rms.json").exists()
+                    committed.append(episode)
+        original_write(path, document)
+
+    model.before_segment = before_segment
+    model.after_segment = after_segment
+    monkeypatch.setattr(transcribe, "extract_audio", extract)
+    monkeypatch.setattr(transcribe, "write_json", write)
+    result = resume_job(ingested_job.job_id, stage="transcribe")
+    assert observed == [
+        (episode, position) for episode in ("E01", "E02", "E03") for position in (1, 2)
+    ]
+    assert committed == extraction_calls == ["E01", "E02", "E03"]
+    assert result.stages.transcribe.current is None
+    assert result.stages.transcribe.status == "done"
+
+
+def test_progress_state_writes_are_throttled_but_activity_changes_are_immediate(
+    ingested_job: JobState,
+    model: _Model,
+    extraction_calls: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fast segment production writes at five-second intervals without delaying new activities."""
+    model.segments = [_Segment(index / 2, (index + 1) / 2, f"Line {index}") for index in range(6)]
+    offsets = [0.1, 4.999, 5.0, 5.001, 9.999, 10.0]
+    clock = [0.0]
+    base = [0.0]
+    monkeypatch.setattr(transcribe, "monotonic", lambda: clock[0])
+    original_extract = transcribe.extract_audio
+    original_write = transcribe.write_json
+    snapshots: list[JobState] = []
+
+    def extract(video_path: Path, audio_path: Path) -> Path:
+        base[0] = 20.0 * (int(video_path.stem[1:]) - 1)
+        clock[0] = base[0]
+        return original_extract(video_path, audio_path)
+
+    def before_segment(index: int, segment: _Segment) -> None:
+        clock[0] = base[0] + offsets[index]
+
+    def write(path: Path, document: object) -> None:
+        if isinstance(document, JobState):
+            snapshots.append(document.model_copy(deep=True))
+        original_write(path, document)
+
+    model.before_segment = before_segment
+    monkeypatch.setattr(transcribe, "extract_audio", extract)
+    monkeypatch.setattr(transcribe, "write_json", write)
+    resume_job(ingested_job.job_id, stage="transcribe")
+    for episode in extraction_calls:
+        updates = [
+            snapshot.stages.transcribe.current
+            for snapshot in snapshots
+            if snapshot.stages.transcribe.current is not None
+            and snapshot.stages.transcribe.current.episode == episode
+        ]
+        assert [(item.activity, item.processed_seconds) for item in updates] == [
+            ("extracting_audio", 0.0),
+            ("loading_model", 0.0),
+            ("decoding", 0.0),
+            ("decoding", 1.5),
+            ("decoding", 3.0),
+        ]
+
+
+def test_failure_persists_latest_throttled_position_and_resume_retries_whole_episode(
+    ingested_job: JobState,
+    model: _Model,
+    extraction_calls: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generator error saves UI context, then retries pending work without partial output."""
+    directory = Path("data/jobs") / ingested_job.job_id
+    model.segments = [_Segment(0, 1, "First"), _Segment(1, 2, "Second")]
+    monkeypatch.setattr(transcribe, "monotonic", lambda: 0.0)
+    persisted_positions: list[float] = []
+
+    def fail_after_segment(index: int, segment: _Segment) -> None:
+        if len(model.calls) == 2:
+            current = get_status(ingested_job.job_id).stages.transcribe.current
+            assert current is not None
+            persisted_positions.append(current.processed_seconds)
+            raise RuntimeError("failure after a decoded segment")
+
+    model.after_segment = fail_after_segment
+    with pytest.raises(RuntimeError, match="after a decoded segment"):
+        resume_job(ingested_job.job_id, stage="transcribe")
+    failed = get_status(ingested_job.job_id)
+    current = failed.stages.transcribe.current
+    assert current is not None
+    assert current.episode == "E02" and current.activity == "decoding"
+    assert current.processed_seconds == 1.0
+    assert persisted_positions == [0.0]
+    assert failed.stages.transcribe.completed == ["E01"]
+    assert failed.stages.transcribe.pending == ["E02", "E03"]
+    assert failed.errors[-1].episode == "E02"
+    assert not (directory / "transcripts/E02.transcript.json").exists()
+    assert not (directory / "audio/E02.rms.json").exists()
+    assert transcribe._MODEL is not None
+    first = directory / "transcripts/E01.transcript.json"
+    first_bytes, first_mtime = first.read_bytes(), first.stat().st_mtime_ns
+    reset_positions: list[float] = []
+    original_extract = transcribe.extract_audio
+
+    def extract(video_path: Path, audio_path: Path) -> Path:
+        if video_path.stem == "E02":
+            current = get_status(ingested_job.job_id).stages.transcribe.current
+            assert current is not None and current.activity == "extracting_audio"
+            reset_positions.append(current.processed_seconds)
+        return original_extract(video_path, audio_path)
+
+    model.after_segment = None
+    monkeypatch.setattr(transcribe, "extract_audio", extract)
+    resumed = resume_job(ingested_job.job_id, stage="transcribe")
+    assert reset_positions == [0.0]
+    assert extraction_calls == ["E01", "E02", "E02", "E03"]
+    assert (first.read_bytes(), first.stat().st_mtime_ns) == (first_bytes, first_mtime)
+    assert resumed.stages.transcribe.current is None
+    assert resumed.stages.transcribe.completed == ["E01", "E02", "E03"]
+    assert len(resumed.errors) == 1
+    assert transcribe._MODEL is None
+
+
+def test_model_resource_cache_is_released_only_after_successful_stage_commit(
+    ingested_job: JobState,
+    model: _Model,
+    extraction_calls: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed decoding retains its model; success frees both singleton and UI cache after saving."""
+    clears: list[str] = []
+
+    def create(cfg: Settings) -> _Model:
+        return model
+
+    def clear() -> None:
+        assert transcribe._MODEL is None
+        persisted = get_status(ingested_job.job_id)
+        assert persisted.stages.transcribe.status == "done"
+        assert persisted.stages.transcribe.current is None
+        assert persisted.stages.transcribe.pending == []
+        clears.append(persisted.job_id)
+
+    create.clear = clear
+    monkeypatch.setattr(transcribe, "_create_model", create)
+    model.fail_on_call = 1
+    with pytest.raises(RuntimeError, match="decoding failure"):
+        resume_job(ingested_job.job_id, stage="transcribe")
+    assert clears == []
+    assert transcribe._MODEL is not None
+    model.fail_on_call = None
+    resume_job(ingested_job.job_id, stage="transcribe")
+    assert clears == [ingested_job.job_id]
+    assert transcribe._MODEL is None
+    resume_job(ingested_job.job_id, stage="transcribe")
+    assert clears == [ingested_job.job_id]
 
 
 @pytest.mark.parametrize("artifact", ["transcript", "rms", "wav", "malformed", "nonutf8"])

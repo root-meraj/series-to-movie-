@@ -57,6 +57,7 @@ class TranscriptDoc(ContractModel):
 
     episode: EpisodeId
     language: str = Field(min_length=1)
+    source: Literal["whisper", "embedded_subtitles"] | None = None
     segments: list[TranscriptSegment] = Field(default_factory=list)
 
 
@@ -329,6 +330,8 @@ class JobParams(ContractModel):
     whisper_model: Literal["tiny", "base", "small", "medium"] = "small"
     whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
     whisper_compute: Literal["auto", "int8", "float16"] = "auto"
+    transcript_source: Literal["auto", "whisper", "subtitles"] = "whisper"
+    subtitle_language: str = Field(default="en", min_length=2, max_length=3, pattern=r"^[a-z]+$")
     detector_threshold: float = Field(default=27.0, gt=0)
     min_scene_seconds: float = Field(default=5.0, gt=0)
     max_characters: int = Field(default=12, gt=0)
@@ -365,6 +368,28 @@ class EpisodeStageState(StageState):
 
     completed: list[EpisodeId] = Field(default_factory=list)
     pending: list[EpisodeId] = Field(default_factory=list)
+
+
+class TranscriptionProgress(ContractModel):
+    """Current decoding activity; partial work does not constitute an episode checkpoint."""
+
+    episode: EpisodeId
+    activity: Literal["extracting_subtitles", "extracting_audio", "loading_model", "decoding"]
+    duration: Seconds
+    processed_seconds: Seconds = 0.0
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> TranscriptionProgress:
+        """Keep decoded source seconds within the current episode's duration."""
+        if self.processed_seconds > self.duration:
+            raise ValueError("processed_seconds must not exceed duration")
+        return self
+
+
+class TranscribeStageState(EpisodeStageState):
+    """Completed episodes and an optional live, uncommitted decoding position."""
+
+    current: TranscriptionProgress | None = None
 
 
 class IngestState(EpisodeStageState):
@@ -407,7 +432,7 @@ class JobStages(ContractModel):
     """The six stages, in pipeline execution order."""
 
     ingest: IngestState = Field(default_factory=IngestState)
-    transcribe: EpisodeStageState = Field(default_factory=EpisodeStageState)
+    transcribe: TranscribeStageState = Field(default_factory=TranscribeStageState)
     scenes: EpisodeStageState = Field(default_factory=EpisodeStageState)
     nlp: NLPState = Field(default_factory=NLPState)
     select: EpisodeStageState = Field(default_factory=EpisodeStageState)

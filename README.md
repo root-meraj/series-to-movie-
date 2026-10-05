@@ -46,6 +46,16 @@ from settings serialization, and never saved to job state. Never commit secrets.
 Whisper is loaded lazily and cached for reuse across episodes. The configured model
 (`small` by default) downloads into the Hugging Face cache the first time it is used.
 For CPU execution, set `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE=int8` in `.env`.
+For NVIDIA CUDA on Windows, install the optional runtime wheels into the same
+virtual environment, then set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE=float16`:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12
+```
+
+The Whisper constructor discovers these wheels' DLL folders and adds them to its
+process PATH. It does not change Windows settings or install libraries automatically.
+An existing compatible system CUDA installation can still supply the libraries.
 spaCy NER uses the English model installed during setup. Sentence embeddings use
 `all-MiniLM-L6-v2` by default, downloaded into the Hugging Face cache on first use.
 Both trained NLP models are loaded lazily and reused within a process.
@@ -67,6 +77,14 @@ separate MP4/SRT downloads. Silent scenes can produce a valid empty subtitle fil
 Preview mode uses MockProvider's sample scores and needs no external LLM service.
 OpenAI story-aware editing requires `ENABLE_OPENAI=true` and an API key in `.env`;
 Ollama uses the configured local endpoint and the model chosen in advanced settings.
+On Windows, an optional standalone Ollama runtime at `.venv/tools/ollama/ollama.exe`
+can be started with `pwsh -File scripts/start_local_ollama.ps1`. This helper starts
+a hidden loopback service, keeps models and logs under `.venv/tools`, and reuses
+its own healthy service when already running. It does not download the runtime or
+models. Install the official standalone runtime first, then pull a local model
+with `.\.venv\tools\ollama\ollama.exe pull qwen3:1.7b` while that service is running.
+Configure `.env` with `LLM_PROVIDER=ollama`, `LLM_MODEL=qwen3:1.7b`, and
+`OLLAMA_BASE_URL=http://127.0.0.1:11434`. Leave OpenAI disabled for this local setup.
 Cloud editing sends dialogue to the configured provider. Source videos remain in
 this workspace. Credentials are never entered in the browser or saved in job state.
 
@@ -75,6 +93,25 @@ to CPU/int8 unless CUDA was explicitly configured, avoiding a dependency on GPU
 runtime libraries. This setting is saved with each new project. CLI defaults are
 unchanged. Trained models load only when their stage needs them and are retained
 with bounded `st.cache_resource` caches; opening the page does not load weights.
+
+**Dialogue source** defaults to **Automatic · use subtitles first** for new jobs.
+Usable embedded text subtitles in `SUBTITLE_LANGUAGE` (English by default) supply
+the transcript and original cue timestamps without loading Whisper. If none are
+available, Automatic falls back to audio transcription. **Embedded subtitles only**
+fails clearly when no usable track exists; **Whisper · transcribe audio** forces ASR.
+Image subtitles and subtitles burned into the video are not text tracks and need ASR.
+Signs/songs/forced titles and sparse forced tracks are excluded. An incorrectly
+forced flag can be overridden for the requested language only when the track has
+enough dialogue cues, at least 25% speech coverage, and spans at least 65% of the
+episode. Full non-forced dialogue remains preferred. If several full text tracks match, the
+extractor chooses the one with the most usable dialogue cues and coverage.
+
+Subtitle dialogue still feeds the existing scene alignment, character extraction,
+story scoring, and selection. Selected clips retain whole scene boundaries and
+season bookends, so a subtitle cue is not treated as an isolated video cut. Audio
+extraction remains necessary for RMS features, and scene detection and final video
+encoding still run. Existing jobs retain their saved Whisper-only behavior unless
+their source policy is explicitly changed; new jobs save their selected source policy.
 
 Uploads are accepted up to 2 GB. Streamlit buffers the upload, then the application
 copies it in chunks to the job's durable `input/source.zip` before starting work.
@@ -124,6 +161,12 @@ summaries are canned test data. For OpenAI, configure `.env` with
 `OPENAI_API_KEY`. OpenAI is disabled by default; the key is read only from `.env`.
 For Ollama, set `LLM_PROVIDER=ollama`, `LLM_MODEL` to an installed chat model, and
 `OLLAMA_BASE_URL` to the running service (default `http://localhost:11434`).
+Ollama needs no API key. An OpenAI model name such as `gpt-4o-mini` is not a local
+Ollama model; choose a model installed by `ollama pull`, for example `qwen3:1.7b`.
+The Qwen3 adapter disables thinking and requests a 32K context for JSON scoring
+and episode summaries. On a small GPU, run the Ollama service with
+`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, and `OLLAMA_NUM_PARALLEL=1`
+to reduce context memory. Longer inputs and local models still require processing time.
 `SEASON_NUMBER` defaults to 1 and supplies the editor prompt's season number.
 
 New jobs save their provider, model, endpoint, and season number. Jobs created
@@ -163,6 +206,15 @@ the final partial second. An episode is checkpointed only after all three files
 are committed. Resume validates artifacts for completed episodes in an unfinished
 stage and regenerates missing or invalid outputs. Saved Whisper settings are used
 even if `.env` changes; start a new job to use a different model configuration.
+
+During transcription, the page identifies the active episode and reports decoded
+source minutes. `stages.transcribe.current` records this activity at most every five
+seconds, plus activity changes. The bar advances within an episode when Whisper
+yields segments; silence may not produce intermediate positions. Only fully saved
+episodes enter `completed`, and an interrupted episode restarts from its beginning.
+CPU transcription of long episodes can take over an hour each. A two-hour output
+target still requires analyzing all source episodes first. After successful ASR,
+the Whisper model is released so a local LLM can use the same GPU.
 
 Scene detection retains uncut videos as a single scene. Short scenes merge into
 neighbors without dropping footage. Detection threshold and minimum scene length
@@ -226,7 +278,8 @@ The parser strips Markdown fences and validates responses with Pydantic. Invalid
 JSON, schema violations, and incomplete completions get at most three attempts
 per summary or scene. Transport and authentication failures stop the stage with
 a recorded error. OpenAI uses [Chat Completions JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs);
-Ollama uses the [non-streaming chat API](https://docs.ollama.com/api/chat).
+Ollama uses the [non-streaming chat API](https://docs.ollama.com/api/chat), with a
+five-minute request timeout to accommodate cold local model startup and episode summaries.
 
 Each accepted response is saved immediately in `transcripts/E##.llm.json` before
 updating `scores.json`, `rolling_summary.json`, and `state.json`. Resume reuses

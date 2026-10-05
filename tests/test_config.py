@@ -23,6 +23,8 @@ def test_defaults_match_specification() -> None:
     assert settings.openai_api_key.get_secret_value() == ""
     assert settings.enable_openai is False
     assert settings.season_number == 1
+    assert settings.transcript_source == "auto"
+    assert settings.subtitle_language == "en"
 
 
 def test_dotenv_and_nonsecret_environment_precedence(
@@ -60,6 +62,8 @@ def test_secret_only_comes_from_dotenv_and_is_not_serialized(
         "TARGET_MINUTES=nan",
         "MIN_CLIP_SECONDS=-1",
         "WHISPER_DEVICE=bogus",
+        "TRANSCRIPT_SOURCE=bogus",
+        "SUBTITLE_LANGUAGE=English",
         "LLM_PROVIDER=bogus",
         "ENABLE_OPENAI=bogus",
         "SEASON_NUMBER=0",

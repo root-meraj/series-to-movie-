@@ -54,6 +54,7 @@ def install_model_cache() -> None:
     Cached constructors contain no widgets, session access, or progress messages,
     so the background worker can use global resources without a script context.
     """
+    _load_whisper.clear = _cached_whisper.clear
     transcribe._create_model = _load_whisper
     ner._create_nlp = _cached_ner
     embeddings._create_model = _cached_sbert

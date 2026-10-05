@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     whisper_model: Literal["tiny", "base", "small", "medium"] = "small"
     whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
     whisper_compute: Literal["auto", "int8", "float16"] = "auto"
+    transcript_source: Literal["auto", "whisper", "subtitles"] = "auto"
+    subtitle_language: str = Field(default="en", min_length=2, max_length=3, pattern=r"^[a-z]+$")
     detector_threshold: float = Field(default=27.0, gt=0)
     min_scene_seconds: float = Field(default=5.0, gt=0)
     target_minutes: float = Field(default=120.0, gt=0)

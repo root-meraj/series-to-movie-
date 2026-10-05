@@ -19,6 +19,7 @@ from sts.schemas import (
     SelectionDoc,
     SelectionStats,
     TranscriptDoc,
+    TranscriptionProgress,
     TranscriptSegment,
     read_json,
     write_json,
@@ -54,6 +55,57 @@ def test_original_state_contract_round_trips(tmp_path: Path) -> None:
     assert read_json(path, JobState) == state
     assert isinstance(state.params.target_seconds, float)
     assert state.created_at.utcoffset().total_seconds() == 0
+    assert state.stages.transcribe.current is None
+    assert state.params.transcript_source == "whisper"
+    assert state.params.subtitle_language == "en"
+
+
+def test_active_transcription_progress_round_trips_without_committing_episode(
+    tmp_path: Path,
+) -> None:
+    """Live decoding positions remain distinct from completed episode checkpoints."""
+    state = JobState(
+        job_id="active123",
+        params={"target_seconds": 120},
+        stages={
+            "transcribe": {
+                "status": "in_progress",
+                "completed": ["E01"],
+                "pending": ["E02"],
+                "current": {
+                    "episode": "E02",
+                    "activity": "decoding",
+                    "duration": 2930.0,
+                    "processed_seconds": 1500.25,
+                },
+            }
+        },
+    )
+    path = tmp_path / "state.json"
+    write_json(path, state)
+    restored = read_json(path, JobState)
+    assert restored == state
+    assert restored.stages.transcribe.completed == ["E01"]
+    assert restored.stages.transcribe.pending == ["E02"]
+    assert restored.stages.transcribe.current.processed_seconds == 1500.25
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"processed_seconds": -1.0},
+        {"processed_seconds": 11.0},
+        {"processed_seconds": float("nan")},
+        {"duration": float("inf")},
+        {"activity": "completed"},
+        {"episode": "Episode 1"},
+    ],
+)
+def test_invalid_active_transcription_progress_is_rejected(changes: dict[str, object]) -> None:
+    """Active activity uses finite, bounded seconds and known episode/phase identifiers."""
+    payload = {"episode": "E01", "activity": "decoding", "duration": 10.0, **changes}
+    with pytest.raises(ValidationError):
+        TranscriptionProgress.model_validate(payload)
 
 
 def test_scenes_scores_and_characters_keep_contract_shapes(tmp_path: Path) -> None:

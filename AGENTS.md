@@ -487,6 +487,68 @@ Phase 10 UI clarifications (existing JSON keys are unchanged):
   browser smoke uses synthetic media and local models without external LLM calls.
   Phase 10 stops before Phase 11 evaluation.
 
+Phase 10 transcription activity extension (existing keys retain their meaning):
+
+- `stages.transcribe.current` is an optional object, default `null` for legacy jobs:
+  `{"episode": "E02", "activity": "decoding", "duration": 2930.0,
+  "processed_seconds": 1500.25}`. `activity` is `extracting_audio`, `loading_model`,
+  or `decoding`. Duration and processed position are finite float seconds, with
+  `0 <= processed_seconds <= duration`. `TranscriptionProgress` and
+  `TranscribeStageState` in `sts/schemas.py` define this JSON contract.
+- Whisper's generator is still immediately materialized. An optional progress
+  callback reports the greatest decoded segment end; filtered segments also
+  advance this position. State writes are limited to once per five seconds, plus
+  activity changes and episode commits. A silent decode may yield no segments.
+  This position is progress information, not an estimate of completion time.
+- `completed` remains a list of fully committed episodes. `current` is cleared
+  after each episode commit and reset when resuming an unfinished episode.
+  Partial transcripts are never published or reused as completed checkpoints.
+  The UI includes the active episode's fraction in its bar and identifies audio
+  preparation, model loading, and decoded source minutes. Original runtime can
+  be read from the ingest manifest before scene selection exists.
+- At the end of successful transcription, release the Whisper singleton and its
+  optional Streamlit resource cache so the next local LLM stage can use GPU memory.
+  Failures retain the model for a retry; never unload it during active decoding.
+  Changing the Whisper identity also clears both caches before allocating its replacement.
+- On Windows, non-CPU Whisper construction discovers optional NVIDIA pip-wheel
+  DLLs under the active environment's `nvidia/{cublas,cuda_nvrtc,cudnn}/bin` folders.
+  It adds only installed DLL folders to the process PATH, once per folder; CPU and
+  other operating systems are unchanged. There is no automatic installation or
+  system environment mutation. Optional runtime installation belongs to setup.
+- Local Ollama requires a running service and an installed model, without an API
+  key. For the Qwen3 family only, the provider sends `think: false` and
+  `options.num_ctx: 32768`, keeping its bounded response budget for JSON answers
+  and allowing longer episode summaries. Other model families retain their
+  existing request options. Unit tests continue to mock all provider transports.
+
+Subtitle-first dialogue extension requested during Phase 10 maintenance:
+
+- `Settings.transcript_source` is `auto` (default), `whisper`, or `subtitles`;
+  `subtitle_language` defaults to `en` and accepts lowercase two/three-letter codes.
+  New jobs save both as `state.params.transcript_source` and `subtitle_language`.
+  Legacy JobParams default to `whisper`/`en`, preserving their existing behavior.
+- `TranscriptDoc.source` is optional `whisper` or `embedded_subtitles`, default
+  `null` for legacy transcripts. Existing `episode`, `language`, and segment keys
+  are unchanged; all imported timestamps remain float seconds.
+- `TranscriptionProgress.activity` also accepts `extracting_subtitles`.
+  `sts/pipeline/subtitles.py` probes and extracts embedded text tracks with FFmpeg,
+  parses SRT cue timestamps and text, and returns a TranscriptDoc plus stream index.
+  It excludes image tracks and explicit forced/signs/songs titles, and prefers the
+  requested language. A forced disposition may be overridden for matching language
+  only with at least `max(20, ceil(duration / 30))` usable cues, union speech coverage
+  of at least 25%, and cue span of at least 65% of episode duration. Full non-forced
+  dialogue is preferred to this fallback; remaining quality ordering uses cue count
+  and coverage. This handles full dialogue incorrectly marked forced in some containers.
+- Automatic imports usable subtitles before considering ASR. Subtitles-only fails
+  if none exist; Whisper mode preserves the original decoder. Audio extraction and
+  RMS remain required, but subtitle import never loads Whisper. Publish RMS and
+  transcript before checkpointing each episode; resume validates source provenance
+  against an explicit subtitles-only/Whisper policy. Existing scenes/align/NLP/
+  select/render contracts and season guardrails remain unchanged.
+- Ollama requests have a bounded 300-second timeout. Cold local CUDA initialization
+  and full episode summaries can exceed the previous 120-second limit; parsing and
+  schema retries remain limited to three, with no real requests in unit tests.
+
 6\. MODULE SPECS
 
 6.1 ingest.py
