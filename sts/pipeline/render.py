@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from sts.pipeline.control import check_stop, run_media
 from sts.schemas import (
     ErrorRecord,
     JobState,
@@ -47,6 +48,14 @@ def _tool(name: str) -> str:
 
 def _run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     try:
+        output = Path(arguments[-1])
+        job_dir = (
+            output.parent.parent.parent
+            if output.parent.name == "clips"
+            else output.parent.parent
+        )
+        if (job_dir / "processing_control.json").is_file():
+            return run_media(arguments, job_dir)
         return subprocess.run(
             arguments,
             check=True,
@@ -427,6 +436,7 @@ def render_job(job_dir: Path, *, loudnorm: bool | None = None, force: bool = Fal
         for index, (clip, clip_fingerprint) in enumerate(
             zip(selection.clips, fingerprints, strict=True), 1
         ):
+            check_stop(job_dir)
             episode = clip.episode
             path = output_dir / "clips" / f"clip_{index:04d}.mp4"
             checkpoint = _cached_clip(path, clip, clip_fingerprint)
@@ -463,6 +473,7 @@ def render_job(job_dir: Path, *, loudnorm: bool | None = None, force: bool = Fal
                 len(selection.clips),
             )
         episode = None
+        check_stop(job_dir)
         movie_path = output_dir / "condensed_movie.mp4"
         if repaired or not stage.video_done or not _output_valid(movie_path, stage.video_sha256):
             stage.video_done = False
@@ -475,6 +486,7 @@ def render_job(job_dir: Path, *, loudnorm: bool | None = None, force: bool = Fal
         else:
             _probe_encoded(movie_path, math.fsum(durations))
         srt_path = output_dir / "condensed.srt"
+        check_stop(job_dir)
         if (
             repaired
             or not stage.subtitles_done

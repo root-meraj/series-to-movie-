@@ -549,6 +549,31 @@ Subtitle-first dialogue extension requested during Phase 10 maintenance:
   and full episode summaries can exceed the previous 120-second limit; parsing and
   schema retries remain limited to three, with no real requests in unit tests.
 
+Phase 10 stop-processing extension (existing checkpoint keys/statuses are unchanged):
+
+- `processing_control.json` is a separate ProcessingControl contract:
+  `{"stop_requested": false}`. The boolean is strict, defaults to false, and is
+  written atomically by the UI runner. Legacy jobs without it continue normally.
+  Stop requests never write `state.json` concurrently with the worker.
+- `sts/pipeline/control.py` checks requests between stages and completed units,
+  on scene-detection frames (polling at most four times per second), between
+  Whisper segments, and before each LLM request/retry. Controlled media subprocesses
+  are terminated and reaped before returning; temporary outputs are cleaned up.
+  Active model initialization/inference and an already issued provider request
+  may finish before a stop is acknowledged. No new operation is queued afterward.
+- `ProcessingStopped` is a control-flow BaseException so ordinary stage failure
+  handlers do not mark a user stop as failed or append to errors. The shared runner
+  catches it, releases the stopped Whisper resource, and becomes idle only after
+  cleanup. Completed units remain committed; an unfinished unit is recomputed.
+  Unfinished stage statuses remain `in_progress`, displayed as Paused while idle.
+- JobRunner exposes `request_stop(job_id)` and `is_stopping(job_id)`; requests
+  target only the active job and repeated requests are safe. Start/resume resets
+  its stop request before submission under the existing runner lock. Other starts
+  remain blocked during Stopping. CLI resume also clears a previous request.
+- The UI shows Stop processing on the active project and the new-project form;
+  Stopping disables repeated clicks and explains the wait. Paused projects retain
+  Resume edit. This maintenance remains within Phase 10; Phase 11 is pending.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

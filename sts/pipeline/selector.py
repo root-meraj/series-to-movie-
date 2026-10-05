@@ -10,6 +10,7 @@ from sts.config import Settings
 from sts.nlp.embeddings import embed
 from sts.nlp.preprocess import preprocess
 from sts.nlp.scorer_textrank import episode_embeddings
+from sts.pipeline.control import check_stop
 from sts.schemas import (
     ErrorRecord,
     JobState,
@@ -281,6 +282,7 @@ def build_selection(job_dir: Path) -> JobState:
         write_json(state_path, state)
         records: list[SceneEmbeddingRecord] = []
         for episode in planned:
+            check_stop(job_dir)
             document = episode_embeddings(
                 [scene for scene in scenes if scene.episode == episode], job_dir, cfg.sbert_model
             )

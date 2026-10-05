@@ -14,6 +14,7 @@ from rapidfuzz.fuzz import token_sort_ratio
 
 from sts.config import Settings
 from sts.nlp.preprocess import preprocess
+from sts.pipeline.control import check_stop
 from sts.schemas import (
     CharacterMention,
     CharacterMentionsDoc,
@@ -186,6 +187,7 @@ def build_characters(job_dir: Path) -> JobState:
         stage.pending = [identifier for identifier in planned if identifier not in stage.completed]
         write_json(state_path, state)
         for episode in planned:
+            check_stop(job_dir)
             if episode in stage.completed:
                 logger.info("nlp characters unit-progress: %s already complete", episode)
                 continue

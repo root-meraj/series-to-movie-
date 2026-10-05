@@ -434,3 +434,28 @@ def test_invalid_local_archive_target_never_creates_job(
     with pytest.raises(ValidationError):
         job_runner.create_from_path(archive, target)
     assert controller.list_jobs(jobs_dir=job_runner.jobs_dir) == []
+
+
+def test_uploaded_job_retries_a_transient_windows_directory_lock(
+    job_runner: JobRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient Windows reader cannot discard a valid uploaded job during publication."""
+    original = Path.replace
+    attempts: list[Path] = []
+
+    def replace(source: Path, destination: Path) -> Path:
+        if source.parent.name.startswith(".sts-upload-"):
+            attempts.append(source)
+            if len(attempts) <= 2:
+                exception = PermissionError("Temporary directory lock")
+                exception.winerror = 5
+                raise exception
+        return original(source, destination)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
+    state = job_runner.create(_upload(b"preserved episode"), 2)
+    assert len(attempts) == 3
+    assert job_runner.get_state(state.job_id) == state
+    assert state.params.zip_path.is_file()
+    assert not job_runner.busy

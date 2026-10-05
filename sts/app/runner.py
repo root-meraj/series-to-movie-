@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,7 +13,9 @@ from typing import BinaryIO
 from zipfile import ZipFile
 
 from sts.config import Settings
+from sts.pipeline.control import ProcessingStopped, set_stop_requested, stop_requested
 from sts.pipeline.controller import create_job, get_status, resume_job
+from sts.pipeline.transcribe import release_model
 from sts.schemas import JobState, write_json
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -94,7 +98,16 @@ class JobRunner:
                 destination = self.jobs_dir / state.job_id
                 state.params.zip_path = destination / "input/source.zip"
                 write_json(directory / "state.json", state)
-                directory.replace(destination)
+                for attempt in range(5):
+                    try:
+                        directory.replace(destination)
+                        break
+                    except PermissionError as exc:
+                        # Windows indexers can briefly hold a newly created directory.
+                        # Keep atomic publication and never remove an existing destination.
+                        if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                            raise
+                        time.sleep(0.05 * 2**attempt)
                 return state
 
     def create_from_path(
@@ -144,10 +157,32 @@ class JobRunner:
             state = get_status(job_id, jobs_dir=self.jobs_dir)
             if state.stages.render.status == "done":
                 return False
+            set_stop_requested(self.jobs_dir / job_id, False)
             self._futures[job_id] = self._executor.submit(
-                resume_job, job_id, jobs_dir=self.jobs_dir
+                self._run, job_id
             )
             return True
+
+    def _run(self, job_id: str) -> JobState:
+        try:
+            return resume_job(job_id, jobs_dir=self.jobs_dir)
+        except ProcessingStopped:
+            logging.getLogger(__name__).info("processing stopped: %s; checkpoints saved", job_id)
+            release_model()
+            return get_status(job_id, jobs_dir=self.jobs_dir)
+
+    def request_stop(self, job_id: str) -> bool:
+        """Request a safe stop for this active job, returning False when it is already idle."""
+        with self._lock:
+            if self._active() != job_id:
+                return False
+            set_stop_requested(self.jobs_dir / job_id, True)
+            return True
+
+    def is_stopping(self, job_id: str) -> bool:
+        """Return whether the active worker is acknowledging this job's stop request."""
+        with self._lock:
+            return self._active() == job_id and stop_requested(self.jobs_dir / job_id)
 
     def is_running(self, job_id: str) -> bool:
         """Return whether this job is currently executing in the background worker."""

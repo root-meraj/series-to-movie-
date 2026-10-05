@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from sts.pipeline.control import run_media
 from sts.schemas import TranscriptDoc, TranscriptSegment
 
 _TEXT_CODECS = frozenset({"subrip", "ass", "ssa", "mov_text", "webvtt", "text"})
@@ -201,16 +202,9 @@ def _substantial_dialogue(segments: list[TranscriptSegment], duration: float) ->
     )
 
 
-def _run(arguments: list[str], description: str) -> str:
+def _run(arguments: list[str], description: str, job_dir: Path) -> str:
     try:
-        return subprocess.run(
-            arguments,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        ).stdout
+        return run_media(arguments, job_dir).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = (
             (exc.stderr or "").strip()
@@ -251,6 +245,7 @@ def extract_subtitles(
     metadata = _run(
         [ffprobe, "-v", "error", "-print_format", "json", "-show_streams", str(video_path)],
         f"Unable to inspect subtitles in {video_path.name}",
+        video_path.parent.parent,
     )
     try:
         document = json.loads(metadata)
@@ -288,6 +283,7 @@ def extract_subtitles(
                     "pipe:1",
                 ],
                 f"Unable to extract subtitle stream {candidate.index} from {video_path.name}",
+                video_path.parent.parent,
             )
         except RuntimeError as exc:
             failures.append(exc)

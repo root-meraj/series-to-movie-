@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from sts.config import Settings
 from sts.pipeline.align import align
+from sts.pipeline.control import StopCheck, check_stop
 from sts.schemas import (
     AudioFeaturesDoc,
     EpisodeInfo,
@@ -21,6 +23,11 @@ from sts.schemas import (
     read_json,
     write_json,
 )
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+    from scenedetect import FrameTimecode
 
 
 def _validate_bounds(bounds: list[tuple[float, float]]) -> None:
@@ -43,9 +50,20 @@ def detect_scenes(video_path: Path, cfg: Settings) -> list[tuple[float, float]]:
     """
     from scenedetect import ContentDetector, detect
 
+    detector = ContentDetector(threshold=cfg.detector_threshold, min_scene_len=1)
+    job_dir = video_path.parent.parent
+    if (job_dir / "processing_control.json").is_file():
+        stop = StopCheck(job_dir)
+        process_frame = detector.process_frame
+
+        def checked_frame(timecode: FrameTimecode, frame: NDArray[np.uint8]) -> list[FrameTimecode]:
+            stop()
+            return process_frame(timecode, frame)
+
+        detector.process_frame = checked_frame
     detected = detect(
         video_path,
-        ContentDetector(threshold=cfg.detector_threshold, min_scene_len=1),
+        detector,
         start_in_scene=True,
     )
     bounds = [(float(start.get_seconds()), float(end.get_seconds())) for start, end in detected]
@@ -132,6 +150,7 @@ def build_scenes(job_dir: Path) -> JobState:
             if episode in stage.completed:
                 logger.info("scenes unit-progress: %s already complete", episode)
                 continue
+            check_stop(job_dir)
             transcript = read_json(
                 job_dir / "transcripts" / f"{episode}.transcript.json", TranscriptDoc
             )

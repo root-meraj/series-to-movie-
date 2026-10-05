@@ -39,6 +39,7 @@ class ControlledRunner(JobRunner):
         self.started: list[str] = []
         self.running_id: str | None = None
         self.worker_errors: dict[str, str] = {}
+        self.stop_requests: list[str] = []
 
     @property
     def busy(self) -> bool:
@@ -87,7 +88,21 @@ class ControlledRunner(JobRunner):
         self.started.append(job_id)
         self.running_id = job_id
         self.worker_errors.pop(job_id, None)
+        self.stop_requests = [
+            identifier for identifier in self.stop_requests if identifier != job_id
+        ]
         return True
+
+    def request_stop(self, job_id: str) -> bool:
+        """Record a requested stop while keeping the worker active until acknowledged."""
+        if self.running_id != job_id:
+            return False
+        self.stop_requests.append(job_id)
+        return True
+
+    def is_stopping(self, job_id: str) -> bool:
+        """Expose a pending stop request for the manually controlled worker."""
+        return self.running_id == job_id and job_id in self.stop_requests
 
     def is_running(self, job_id: str) -> bool:
         """Return whether this job occupies the deterministic background worker."""
@@ -674,6 +689,69 @@ def test_fresh_browser_session_reopens_and_resumes_a_saved_project(
     app.button(key=f"resume_{state.job_id}").click().run()
     assert runner.started == [state.job_id]
     assert len(runner.created) == 1
+
+
+def test_running_project_can_stop_and_resume_without_creating_another_job(
+    runner: ControlledRunner,
+) -> None:
+    """The native stop control acknowledges the request and keeps the existing project resumable."""
+    app = _create(_app())
+    state = runner.created[0]
+    state.stages.ingest.status = "done"
+    state.stages.transcribe.status = "in_progress"
+    write_json(runner.jobs_dir / state.job_id / "state.json", state)
+    app.run()
+    assert not app.button(key=f"stop_{state.job_id}").disabled
+    app.button(key=f"stop_{state.job_id}").click().run()
+    assert not app.exception
+    assert runner.stop_requests == [state.job_id]
+    assert runner.running_id == state.job_id
+    assert app.button(key=f"stop_{state.job_id}").disabled
+    assert app.button(key=f"stop_{state.job_id}").label == "Stopping…"
+    assert any("Completed work is saved" in message.value for message in app.info)
+    runner.running_id = None
+    app.run()
+    assert not app.error
+    assert not app.button(key=f"resume_{state.job_id}").disabled
+    app.button(key=f"resume_{state.job_id}").click().run()
+    assert runner.started == [state.job_id, state.job_id]
+    assert len(runner.created) == 1
+    assert not runner.is_stopping(state.job_id)
+
+
+def test_new_project_form_can_stop_the_previous_processing_job(runner: ControlledRunner) -> None:
+    """Users need not leave the creation form to release the worker occupied by an older edit."""
+    app = _create(_app())
+    state = runner.created[0]
+    app.button(key="new_project").click().run()
+    assert app.session_state["active_job"] is None
+    assert app.button(key="create_project").disabled
+    app.button(key="stop_previous_edit").click().run()
+    assert not app.exception
+    assert runner.stop_requests == [state.job_id]
+    assert app.session_state["active_job"] is None
+    assert app.button(key="stop_previous_edit").disabled
+    runner.running_id = None
+    app.run()
+    assert len(runner.created) == 1
+    assert not any(button.key == "stop_previous_edit" for button in app.button)
+
+
+def test_viewing_a_different_paused_project_cannot_stop_the_active_job(
+    runner: ControlledRunner,
+) -> None:
+    """Stop controls target their named project rather than an unrelated background edit."""
+    app = _create(_app())
+    active = runner.created[0]
+    other = JobState(job_id="other_project")
+    write_json(runner.jobs_dir / other.job_id / "state.json", other)
+    app.run()
+    app.button(key=f"job_{other.job_id}").click().run()
+    assert not app.exception
+    assert app.button(key=f"resume_{other.job_id}").disabled
+    assert not any(button.key == f"stop_{other.job_id}" for button in app.button)
+    assert runner.running_id == active.job_id
+    assert runner.stop_requests == []
 
 
 @pytest.fixture

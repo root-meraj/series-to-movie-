@@ -128,6 +128,16 @@ overlapping model work and duplicate job launches. Stage progress is read from
 `state.json` every two seconds while processing. Closing or refreshing the browser
 does not stop the worker; reopening a saved project restores its status. After a
 server restart, unfinished projects offer **Resume edit** from saved checkpoints.
+Use **Stop processing** on a running project to pause the edit and keep completed work.
+The same control appears on the new-project page while an older edit is running.
+While **Stopping…** is shown, the worker is finishing or interrupting its active operation;
+another project can start once it becomes idle. Scene detection checks between frames,
+media conversion terminates its own child process, and Whisper checks between decoded
+segments. A model loading/inference operation or an active story-model request may need
+to finish first; no further unit or JSON retry starts after the request. Stop requests do
+not add processing errors. **Resume edit** reuses saved episodes, scene scores, and clips;
+the unfinished unit starts again. Files are retained.
+
 Keep the Streamlit server running until processing completes. Avoid running a CLI
 writer against the same active job.
 

@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from zipfile import ZipFile, ZipInfo
 
+from sts.pipeline.control import check_stop
 from sts.schemas import EpisodeInfo, ErrorRecord, JobParams, JobState, read_json, write_json
 
 
@@ -164,7 +165,9 @@ def _extract_video(archive: ZipFile, member: ZipInfo, destination: Path, ffprobe
         ) as stream:
             temporary_path = Path(stream.name)
             with archive.open(member) as source:
-                shutil.copyfileobj(source, stream, length=1024 * 1024)
+                while block := source.read(1024 * 1024):
+                    check_stop(destination.parent.parent)
+                    stream.write(block)
             stream.flush()
             os.fsync(stream.fileno())
         duration = _probe_duration(temporary_path, ffprobe)
@@ -222,6 +225,7 @@ def ingest_zip(zip_path: Path, job_dir: Path) -> list[EpisodeInfo]:
             verified: list[EpisodeInfo] = []
             previous = {item.episode: item for item in stage.episodes}
             for index, member in enumerate(members, start=1):
+                check_stop(job_dir)
                 identifier = f"E{index:02d}"
                 suffix = PurePosixPath(member.filename.replace("\\", "/")).suffix.lower()
                 destination = episodes_dir / f"{identifier}{suffix}"
@@ -244,6 +248,7 @@ def ingest_zip(zip_path: Path, job_dir: Path) -> list[EpisodeInfo]:
 
             for index, member in enumerate(members, start=1):
                 episode = f"E{index:02d}"
+                check_stop(job_dir)
                 if episode in stage.completed:
                     logger.info("ingest unit-progress: %s already complete", episode)
                     continue

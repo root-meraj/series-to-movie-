@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from sts.config import Settings
 from sts.nlp.rolling_summary import build_summary_prompt
+from sts.pipeline.control import check_stop
 from sts.schemas import (
     CharacterTable,
     ContractModel,
@@ -57,6 +58,25 @@ class LLMProvider(ABC):
     @abstractmethod
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
         """Return a completion string, requesting JSON when json_mode is enabled."""
+
+
+class _StoppingProvider(LLMProvider):
+    """Honor a job's stop request before each completion, including JSON retries."""
+
+    def __init__(self, provider: LLMProvider, job_dir: Path) -> None:
+        """Wrap a completion provider with the job's durable stop request."""
+        self.provider = provider
+        self.job_dir = job_dir
+
+    def complete(self, system: str, user: str, json_mode: bool = True) -> str:
+        """Finish an already active request, but never issue another after a stop request."""
+        check_stop(self.job_dir)
+        try:
+            return self.provider.complete(system, user, json_mode=json_mode)
+        except Exception:
+            # A timeout during an acknowledged user stop is control flow, not a job failure.
+            check_stop(self.job_dir)
+            raise
 
 
 def _create_openai_client(cfg: Settings) -> OpenAI:
@@ -389,6 +409,8 @@ def _publish(
 
 def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState:
     """Resume summary and scene calls from durable checkpoints, preserving baseline scores."""
+    if provider is not None:
+        provider = _StoppingProvider(provider, job_dir)
     logger = logging.getLogger(__name__)
     state_path = job_dir / "state.json"
     state = read_json(state_path, JobState)
@@ -442,6 +464,7 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
         _publish(job_dir, state, baselines, results, summaries)
         previous = ""
         for group in groups:
+            check_stop(job_dir)
             episode = group[0].episode
             path = job_dir / "transcripts" / f"{episode}.llm.json"
             fingerprint = _checkpoint_hash(group, characters, previous, cfg, show)
@@ -453,8 +476,9 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
             stage.completed_scenes = [record.scene_id for record in cache.scores]
             write_json(state_path, state)
             if cache.summary is None:
+                check_stop(job_dir)
                 if provider is None:
-                    provider = create_provider(cfg)
+                    provider = _StoppingProvider(create_provider(cfg), job_dir)
                 cache.summary = _summarize(group, characters, previous, cfg, provider, show)
                 write_json(path, cache)
             stage.summary_done = True
@@ -463,8 +487,9 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
             _publish(job_dir, state, baselines, results, summaries)
             logger.info("nlp llm unit-progress: %s summary ready", episode)
             for index in range(len(cache.scores), len(group)):
+                check_stop(job_dir)
                 if provider is None:
-                    provider = create_provider(cfg)
+                    provider = _StoppingProvider(create_provider(cfg), job_dir)
                 result = _score_one(
                     group[index],
                     index + 1,

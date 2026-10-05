@@ -562,10 +562,32 @@ def _watch_worker(runner: JobRunner) -> None:
     job_id = runner.active_job_id
     if job_id is None:
         st.rerun()
-    st.caption("Your current edit is processing. This form will be ready when it finishes.")
+    st.caption(
+        "Your current edit is processing. Stop it or wait for it to finish to start another."
+    )
     if st.button("View current edit", key="view_current_edit", type="tertiary"):
         st.session_state.active_job = job_id
         st.rerun()
+    _stop_processing(runner, job_id, key="stop_previous_edit")
+
+
+def _stop_processing(runner: JobRunner, job_id: str, *, key: str) -> None:
+    stopping = runner.is_stopping(job_id)
+    if stopping:
+        st.info("Stopping processing… Completed work is saved. Waiting for the active operation.")
+    if st.button(
+        "Stopping…" if stopping else "Stop processing",
+        icon=":material/stop_circle:",
+        key=key,
+        disabled=stopping,
+    ):
+        try:
+            runner.request_stop(job_id)
+            st.rerun()
+        except (OSError, ValueError) as exc:
+            st.error(f"Couldn't stop processing: {exc}")
+    if not stopping:
+        st.caption("Completed work is saved. You can resume this project later.")
 
 
 def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -> None:
@@ -630,6 +652,8 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
         return
     running = runner.is_running(job_id)
     label, style = _job_status(state, running)
+    if running and runner.is_stopping(job_id):
+        label = "Stopping…"
     directory = runner.jobs_dir / job_id
     selection = _selection(directory)
     name = html.escape(state.params.name or "Untitled season")
@@ -660,6 +684,8 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
         f'<div class="stat"><label>Original runtime</label><strong>{original}</strong></div></div>'
     )
     error = runner.error(job_id)
+    if running:
+        _stop_processing(runner, job_id, key=f"stop_{job_id}")
     if not running and state.stages.render.status != "done":
         if label == "Needs attention" or error:
             st.error("This edit needs attention. Your completed work is saved.")

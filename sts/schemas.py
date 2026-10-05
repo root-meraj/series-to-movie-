@@ -458,6 +458,12 @@ class JobState(ContractModel):
     errors: list[ErrorRecord] = Field(default_factory=list)
 
 
+class ProcessingControl(ContractModel):
+    """The processing_control.json stop request, separate from worker checkpoints."""
+
+    stop_requested: bool = Field(default=False, strict=True)
+
+
 def read_json(path: Path, document_type: type[Document]) -> Document:
     """Read and validate one JSON document against its contract."""
     return document_type.model_validate_json(path.read_text(encoding="utf-8"))

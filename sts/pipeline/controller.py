@@ -12,6 +12,7 @@ from sts.config import Settings
 from sts.nlp.ner import build_characters
 from sts.nlp.scorer_llm import build_llm
 from sts.nlp.scorer_textrank import build_baseline
+from sts.pipeline.control import check_stop
 from sts.pipeline.ingest import ingest_zip
 from sts.pipeline.render import render_job
 from sts.pipeline.scenes import build_scenes
@@ -106,7 +107,10 @@ def _run_stages(job_dir: Path, stage: str) -> JobState:
         ("select", "select", build_selection),
         ("render", "render", render_job),
     )
+    state = read_json(job_dir / "state.json", JobState)
     for label, stage_name, runner in runners:
+        if _stage_state(state, label).status != "done":
+            check_stop(job_dir)
         state = _run_stage(job_dir, label, stage_name, runner)
         if stage == label:
             return state

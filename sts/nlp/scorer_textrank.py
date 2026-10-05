@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from sts.nlp.embeddings import embed
 from sts.nlp.preprocess import preprocess
+from sts.pipeline.control import check_stop
 from sts.schemas import (
     ErrorRecord,
     JobState,
@@ -186,6 +187,7 @@ def build_baseline(job_dir: Path) -> JobState:
         stage.pending = [identifier for identifier in planned if identifier not in stage.completed]
         write_json(state_path, state)
         for episode in planned:
+            check_stop(job_dir)
             if episode in stage.completed:
                 logger.info("nlp baseline unit-progress: %s embeddings already complete", episode)
                 continue

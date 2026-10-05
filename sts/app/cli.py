@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Column, Table
 
+from sts.pipeline.control import ProcessingStopped, set_stop_requested, stop_requested
 from sts.pipeline.controller import get_status, list_jobs, render_saved_job, resume_job, run_job
 
 
@@ -110,8 +111,16 @@ def main(argv: list[str] | None = None) -> int:
                 stage=args.stage,
             )
         elif args.command == "resume":
+            saved = get_status(args.job, jobs_dir=args.jobs_dir)
+            directory = args.jobs_dir / saved.job_id
+            if stop_requested(directory):
+                set_stop_requested(directory, False)
             state = resume_job(args.job, jobs_dir=args.jobs_dir, stage=args.stage)
         elif args.command == "render":
+            saved = get_status(args.job, jobs_dir=args.jobs_dir)
+            directory = args.jobs_dir / saved.job_id
+            if stop_requested(directory):
+                set_stop_requested(directory, False)
             state = render_saved_job(args.job, jobs_dir=args.jobs_dir, loudnorm=args.loudnorm)
             console.print(f"Job {state.job_id}: render done.", markup=False)
             _show_outputs(console, args.jobs_dir, state.job_id)
@@ -132,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
             _show_outputs(console, args.jobs_dir, state.job_id)
         else:
             console.print(f"Stopped after {args.stage}.", markup=False)
+        return 0
+    except ProcessingStopped:
+        console.print("Processing stopped. Completed work is saved; resume the project later.")
         return 0
     except Exception as exc:
         console.print(f"Error: {exc}", style="red", markup=False)

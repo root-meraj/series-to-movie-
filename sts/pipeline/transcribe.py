@@ -21,6 +21,7 @@ from numpy.typing import NDArray
 from pydantic import ValidationError
 
 from sts.config import Settings
+from sts.pipeline.control import check_stop, run_media
 from sts.pipeline.subtitles import extract_subtitles
 from sts.schemas import (
     AudioFeaturesDoc,
@@ -105,7 +106,7 @@ def extract_audio(video_path: Path, audio_path: Path) -> Path:
             dir=audio_path.parent, prefix=f".{audio_path.stem}.", suffix=".wav", delete=False
         ) as stream:
             temporary_path = Path(stream.name)
-        subprocess.run(
+        run_media(
             [
                 ffmpeg,
                 "-hide_banner",
@@ -126,11 +127,7 @@ def extract_audio(video_path: Path, audio_path: Path) -> Path:
                 "pcm_s16le",
                 str(temporary_path),
             ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            audio_path.parent.parent,
         )
         metadata = sf.info(temporary_path)
         if metadata.samplerate != 16000 or metadata.channels != 1 or metadata.frames <= 0:
@@ -185,9 +182,11 @@ def _track_segments(
     episode: str,
     duration: float,
     progress: Callable[[TranscriptionProgress], None] | None,
+    job_dir: Path,
 ) -> Iterator[Segment]:
     processed = 0.0
     for segment in segments:
+        check_stop(job_dir)
         if progress is not None and math.isfinite(segment.end):
             position = max(processed, min(duration, max(0.0, float(segment.end))))
             if position > processed:
@@ -228,7 +227,9 @@ def transcribe_episode(
                 episode=audio_path.stem, activity="loading_model", duration=features.duration
             )
         )
+    check_stop(audio_path.parent.parent)
     model = _get_model(cfg)
+    check_stop(audio_path.parent.parent)
     if progress is not None:
         progress(
             TranscriptionProgress(
@@ -239,7 +240,11 @@ def transcribe_episode(
         wav, word_timestamps=False, vad_filter=True, condition_on_previous_text=False
     )
     # Materialize immediately: progress reports do not defer decoding or publish partial dialogue.
-    segments = list(_track_segments(segments, audio_path.stem, features.duration, progress))
+    segments = list(
+        _track_segments(
+            segments, audio_path.stem, features.duration, progress, audio_path.parent.parent
+        )
+    )
     document = TranscriptDoc(
         episode=audio_path.stem,
         language=info.language,
@@ -344,6 +349,7 @@ def transcribe_job(job_dir: Path) -> JobState:
             if episode in stage.completed:
                 logger.info("transcribe unit-progress: %s already complete", episode)
                 continue
+            check_stop(job_dir)
             subtitles = None
             if cfg.transcript_source != "whisper":
                 stage.current = TranscriptionProgress(
@@ -369,6 +375,7 @@ def transcribe_job(job_dir: Path) -> JobState:
 
             def update_progress(current: TranscriptionProgress) -> None:
                 nonlocal last_write
+                check_stop(job_dir)
                 changed_activity = (
                     stage.current is None or stage.current.activity != current.activity
                 )
