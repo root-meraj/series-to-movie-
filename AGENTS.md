@@ -574,6 +574,21 @@ Phase 10 stop-processing extension (existing checkpoint keys/statuses are unchan
   Stopping disables repeated clicks and explains the wait. Paused projects retain
   Resume edit. This maintenance remains within Phase 10; Phase 11 is pending.
 
+Phase 10 local scoring validation repair (existing JSON keys and limits are unchanged):
+
+- `LLMProvider.complete_structured(system, user, response_schema)` defaults to
+  `complete(..., json_mode=True)` for compatible providers. Ollama overrides it
+  to send the actual Pydantic response schema in `format`, grounded in the prompt.
+  Scene reason schemas include a grammar-compatible pattern for 1-15 plain words.
+  Pydantic still validates every result strictly, including custom word limits.
+- Invalid responses receive specific feedback for the failed contract fields.
+  Feedback/logs never echo model values, response bodies, or arbitrary extra keys.
+  Retries remain bounded to three; invalid scores are never coerced or fabricated.
+  The stop wrapper delegates structured requests with the same stop/error checks.
+- Completed episode summaries and scene scores retain their checkpoint fingerprints
+  and are reused on resume; only the failed scene is requested again. This repair
+  remains Phase 10 maintenance and does not start Phase 11.
+
 6\. MODULE SPECS
 
 6.1 ingest.py

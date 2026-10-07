@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,11 +22,13 @@ from sts.schemas import (
     CharacterTable,
     EpisodeLLMDoc,
     JobState,
+    LLMSceneResponse,
     RollingSummaryDoc,
     SceneRecord,
     ScenesDoc,
     ScoreRecord,
     ScoresDoc,
+    SummaryResponse,
     read_json,
     write_json,
 )
@@ -134,6 +137,59 @@ def test_invalid_json_stops_after_three_attempts_without_logging_response(
         llm.score_scenes([_scene(1)], CharacterTable(), "", Settings(), provider=provider)
     assert len(provider.calls) == 3
     assert "private-response-body" not in str(failure.value) + caplog.text
+
+
+def test_long_reason_retry_explains_the_exact_limit_without_echoing_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The reported failure gets actionable feedback instead of repeating a generic request."""
+    invalid = json.dumps(
+        {"score": 8, "plot_advance": True, "reason": "private-response-body " * 16}
+    )
+    mock = llm.MockProvider([invalid, _score()])
+    result = llm._complete_json(mock, "Editor", "Scene request", LLMSceneResponse)
+    assert result.score == 8
+    assert len(mock.calls) == 2
+    assert mock.calls[1][1].startswith("Scene request\nInvalid response.")
+    assert "1 to 15 words" in mock.calls[1][1]
+    assert "private-response-body" not in mock.calls[1][1] + caplog.text
+
+
+def test_failed_validation_feedback_never_echoes_unknown_fields_or_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Extra-key locations and invalid field values stay out of prompts, logs, and errors."""
+    invalid = json.dumps(
+        {
+            "score": "private-value",
+            "plot_advance": True,
+            "reason": "Conflict",
+            "private-field-name": "private-extra-value",
+        }
+    )
+    mock = llm.MockProvider([invalid] * 3)
+    with pytest.raises(llm.InvalidCompletionError, match="integer from 1 to 10") as failure:
+        llm._complete_json(mock, "Editor", "Scene request", LLMSceneResponse)
+    visible = str(failure.value) + caplog.text + " ".join(call[1] for call in mock.calls)
+    assert "private-" not in visible
+    assert len(mock.calls) == 3
+
+
+def test_summary_retry_states_the_word_and_character_limits() -> None:
+    """Summary custom validators provide precise feedback too, with no permissive fallback."""
+    mock = llm.MockProvider(
+        [json.dumps({"summary": "word " * 501}), json.dumps({"summary": "Short context."})]
+    )
+    assert llm._complete_json(mock, "Editor", "Update rolling summary", SummaryResponse).summary
+    assert "at most 500 words and 6000 characters" in mock.calls[1][1]
+
+
+@pytest.mark.parametrize("words, accepted", [(0, False), (1, True), (15, True), (16, False)])
+def test_reason_generation_schema_bounds_plain_words(words: int, accepted: bool) -> None:
+    """The local grammar uses supported explicit character classes to bound generation."""
+    pattern = LLMSceneResponse.model_json_schema()["properties"]["reason"]["pattern"]
+    assert bool(re.fullmatch(pattern, " ".join(["conflict"] * words))) is accepted
+    assert r"\s" not in pattern and r"\S" not in pattern
 
 
 def test_empty_input_and_duplicate_ids_make_no_calls() -> None:
@@ -250,6 +306,35 @@ def test_ollama_adapter_disables_streaming_and_uses_mock_transport(
     assert adapter.complete("Editor", "Scene", json_mode) == _score()
 
 
+@pytest.mark.parametrize("response_type", [LLMSceneResponse, SummaryResponse])
+def test_ollama_structured_completion_receives_the_actual_response_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    response_type: type[LLMSceneResponse] | type[SummaryResponse],
+) -> None:
+    """Schema constraints reach Ollama even through the resumable worker's stop wrapper."""
+    raw = _score() if response_type is LLMSceneResponse else json.dumps({"summary": "Context."})
+    mock = llm.MockProvider([raw])
+    schema = response_type.model_json_schema()
+
+    def post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert payload["format"] == schema
+        assert payload["format"]["additionalProperties"] is False
+        system, user = payload["messages"]
+        assert "Required response JSON schema:" in system["content"]
+        assert json.dumps(schema) in system["content"]
+        assert payload["think"] is False and payload["stream"] is False
+        assert payload["options"]["num_ctx"] == 32768
+        content = mock.complete(system["content"], user["content"])
+        return {"done": True, "done_reason": "stop", "message": {"content": content}}
+
+    monkeypatch.setattr(llm, "_post_ollama", post)
+    adapter = llm.OllamaProvider(Settings(llm_provider="ollama", llm_model="qwen3:1.7b"))
+    guarded = llm._StoppingProvider(adapter, tmp_path)
+    assert llm._complete_json(guarded, "Editor", "Request", response_type).model_dump()
+    assert len(mock.calls) == 1
+
+
 @pytest.mark.parametrize("json_mode", [True, False])
 @pytest.mark.parametrize(
     "model, qwen3",
@@ -311,8 +396,13 @@ def test_qwen3_long_episode_payload_keeps_all_dialogue_and_retries_invalid_scene
         assert payload["think"] is False
         assert payload["options"]["num_ctx"] == 32768
         assert payload["options"]["num_predict"] == 2000
-        assert payload["stream"] is False and payload["format"] == "json"
+        assert payload["stream"] is False
         system, user = payload["messages"]
+        expected_type = (
+            SummaryResponse if user["content"].startswith("Update rolling summary")
+            else LLMSceneResponse
+        )
+        assert payload["format"] == expected_type.model_json_schema()
         content = mock.complete(system["content"], user["content"], json_mode=True)
         return {"done": True, "done_reason": "stop", "message": {"content": content}}
 
@@ -479,6 +569,25 @@ def test_every_summary_and_scene_unit_resumes_without_repeating_completed_calls(
     assert [
         score.llm_score for score in read_json(baseline_job / "scores.json", ScoresDoc).root
     ] == [8, 3, 9, 4]
+
+
+def test_resume_after_repeated_long_reason_preserves_valid_summary_and_scores(
+    baseline_job: Path,
+) -> None:
+    """The real failure pattern resumes at the offending scene with existing scores intact."""
+    invalid = json.dumps({"score": 8, "plot_advance": True, "reason": "word " * 16})
+    failing = llm.MockProvider([*_script()[:2], invalid, invalid, invalid])
+    with pytest.raises(llm.InvalidCompletionError, match="1 to 15 words"):
+        llm.build_llm(baseline_job, provider=failing)
+    path = baseline_job / "transcripts/E01.llm.json"
+    saved = read_json(path, EpisodeLLMDoc)
+    assert len(saved.scores) == 1 and saved.summary is not None
+    resumed = llm.MockProvider(_script()[2:])
+    assert llm.build_llm(baseline_job, provider=resumed).stages.nlp.status == "done"
+    assert len(resumed.calls) == 4 and resumed.calls[0][1].startswith("Scene 2 of 2")
+    completed = read_json(path, EpisodeLLMDoc)
+    assert completed.input_sha256 == saved.input_sha256
+    assert completed.summary == saved.summary and completed.scores[0] == saved.scores[0]
 
 
 @pytest.mark.parametrize("saved_scores", [0, 1])

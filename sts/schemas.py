@@ -199,7 +199,14 @@ class LLMSceneResponse(ContractModel):
 
     score: int = Field(ge=1, le=10, strict=True)
     plot_advance: bool = Field(strict=True)
-    reason: str = Field(min_length=1, max_length=1000, strict=True)
+    reason: str = Field(
+        min_length=1,
+        max_length=1000,
+        strict=True,
+        description="A short explanation of 1 to 15 words, separated by single spaces.",
+        # Explicit classes are supported by Ollama's grammar converter; \s/\S are not.
+        json_schema_extra={"pattern": r'^[^ \t\r\n"\\]+( [^ \t\r\n"\\]+){0,14}$'},
+    )
 
     @field_validator("reason")
     @classmethod

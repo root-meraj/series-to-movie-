@@ -59,6 +59,12 @@ class LLMProvider(ABC):
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
         """Return a completion string, requesting JSON when json_mode is enabled."""
 
+    def complete_structured(
+        self, system: str, user: str, response_schema: dict[str, Any]
+    ) -> str:
+        """Request structured JSON; providers without schema support use normal JSON mode."""
+        return self.complete(system, user, json_mode=True)
+
 
 class _StoppingProvider(LLMProvider):
     """Honor a job's stop request before each completion, including JSON retries."""
@@ -75,6 +81,17 @@ class _StoppingProvider(LLMProvider):
             return self.provider.complete(system, user, json_mode=json_mode)
         except Exception:
             # A timeout during an acknowledged user stop is control flow, not a job failure.
+            check_stop(self.job_dir)
+            raise
+
+    def complete_structured(
+        self, system: str, user: str, response_schema: dict[str, Any]
+    ) -> str:
+        """Keep schema-constrained requests and their retries behind the same stop checks."""
+        check_stop(self.job_dir)
+        try:
+            return self.provider.complete_structured(system, user, response_schema)
+        except Exception:
             check_stop(self.job_dir)
             raise
 
@@ -169,6 +186,18 @@ class OllamaProvider(LLMProvider):
 
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
         """Request bounded answers, using 32K context without thinking for Qwen3 models."""
+        return self._complete(system, user, "json" if json_mode else None)
+
+    def complete_structured(
+        self, system: str, user: str, response_schema: dict[str, Any]
+    ) -> str:
+        """Constrain local generation to the response contract, including reason word limits."""
+        system += "\nRequired response JSON schema:\n" + json.dumps(response_schema)
+        return self._complete(system, user, response_schema)
+
+    def _complete(
+        self, system: str, user: str, response_format: str | dict[str, Any] | None
+    ) -> str:
         options = {"temperature": 0, "num_predict": 2000}
         payload: dict[str, object] = {
             "model": self._model,
@@ -181,8 +210,8 @@ class OllamaProvider(LLMProvider):
             # channel, potentially leaving no JSON in message.content.
             payload["think"] = False
             options["num_ctx"] = 32768
-        if json_mode:
-            payload["format"] = "json"
+        if response_format is not None:
+            payload["format"] = response_format
         data = _post_ollama(self._url, payload)
         if data.get("error"):
             raise ProviderError("Ollama reported an error; check the service and model")
@@ -238,22 +267,47 @@ def create_provider(cfg: Settings) -> LLMProvider:
 def _complete_json(
     provider: LLMProvider, system: str, user: str, document_type: type[ResponseDoc]
 ) -> ResponseDoc:
+    response_schema = document_type.model_json_schema()
+    original_user = user
+    feedback = "Return only JSON matching the requested schema and limits."
     for attempt in range(3):
         try:
-            raw = provider.complete(system, user, json_mode=True).strip()
+            raw = provider.complete_structured(system, user, response_schema).strip()
             fenced = re.fullmatch(
                 r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.DOTALL | re.IGNORECASE
             )
             payload = fenced.group(1) if fenced else raw
             return document_type.model_validate_json(payload)
-        except (ValidationError, InvalidCompletionError):
-            logging.getLogger(__name__).warning(
-                "nlp llm unit-progress: invalid JSON response (%d/3)", attempt + 1
-            )
-            user += "\nInvalid response. Return only JSON matching the requested schema and limits."
+        except ValidationError as exc:
+            feedback = _validation_feedback(exc)
+        except InvalidCompletionError:
+            feedback = "Return a complete JSON object matching the requested schema."
+        logging.getLogger(__name__).warning(
+            "nlp llm unit-progress: invalid JSON response (%d/3): %s", attempt + 1, feedback
+        )
+        user = original_user + "\nInvalid response. " + feedback
     raise InvalidCompletionError(
-        f"LLM response failed {document_type.__name__} validation after 3 attempts"
+        f"LLM response failed {document_type.__name__} validation after 3 attempts: {feedback}"
     )
+
+
+def _validation_feedback(exc: ValidationError) -> str:
+    # Fixed contract messages avoid echoing model text or arbitrary extra field names.
+    requirements = {
+        "score": "score must be an integer from 1 to 10, without quotes.",
+        "plot_advance": "plot_advance must be the JSON boolean true or false, without quotes.",
+        "reason": "reason must be a nonempty string of 1 to 15 words; use a short explanation.",
+        "summary": "summary must be a nonempty string of at most 500 words and 6000 characters.",
+    }
+    messages: list[str] = []
+    for error in exc.errors(include_input=False, include_context=False, include_url=False):
+        location = error["loc"]
+        message = requirements.get(location[0]) if location else None
+        if message is None:
+            message = "Return only the required fields in a valid JSON object."
+        if message not in messages:
+            messages.append(message)
+    return " ".join(messages)
 
 
 def _group_episodes(scenes: list[SceneRecord]) -> list[list[SceneRecord]]:

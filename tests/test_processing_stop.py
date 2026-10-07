@@ -281,3 +281,23 @@ def test_active_provider_timeout_during_stop_is_acknowledged_without_a_failure(
     guarded = scorer_llm._StoppingProvider(mock, tmp_path)
     with pytest.raises(control.ProcessingStopped):
         guarded.complete("system", "summary")
+
+
+def test_structured_provider_stop_prevents_more_schema_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema-aware delegation preserves stop checks before every request and retry."""
+    mock = scorer_llm.MockProvider()
+    calls: list[str] = []
+
+    def complete_structured(system: str, user: str, response_schema: dict[str, object]) -> str:
+        calls.append(user)
+        assert response_schema == SummaryResponse.model_json_schema()
+        control.set_stop_requested(tmp_path, True)
+        return "invalid JSON"
+
+    monkeypatch.setattr(mock, "complete_structured", complete_structured)
+    guarded = scorer_llm._StoppingProvider(mock, tmp_path)
+    with pytest.raises(control.ProcessingStopped):
+        scorer_llm._complete_json(guarded, "system", "summary", SummaryResponse)
+    assert calls == ["summary"]
