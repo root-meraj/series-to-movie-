@@ -15,6 +15,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from sts.schemas import RequiredRange
+
 
 class Settings(BaseSettings):
     """Runtime configuration; model loading and API calls happen in later stages."""
@@ -30,6 +32,13 @@ class Settings(BaseSettings):
     subtitle_language: str = Field(default="en", min_length=2, max_length=3, pattern=r"^[a-z]+$")
     detector_threshold: float = Field(default=27.0, gt=0)
     min_scene_seconds: float = Field(default=5.0, gt=0)
+    scene_method: Literal["visual", "subtitles"] = "subtitles"
+    scene_block_seconds: float = Field(default=60.0, ge=15, le=180)
+    exclude_credits: bool = True
+    selection_strategy: Literal["density", "story"] = "story"
+    must_keep_ranges: list[RequiredRange] = Field(default_factory=list)
+    llm_batch_size: int = Field(default=8, ge=1, le=12)
+    render_encoder: Literal["auto", "libx264", "h264_nvenc"] = "auto"
     target_minutes: float = Field(default=120.0, gt=0)
     min_clip_seconds: float = Field(default=15.0, gt=0)
     llm_provider: Literal["openai", "ollama", "mock"] = "openai"

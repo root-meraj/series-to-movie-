@@ -14,9 +14,9 @@ from zipfile import ZipFile
 
 from sts.config import Settings
 from sts.pipeline.control import ProcessingStopped, set_stop_requested, stop_requested
-from sts.pipeline.controller import create_job, get_status, resume_job
+from sts.pipeline.controller import create_improved_job, create_job, get_status, resume_job
 from sts.pipeline.transcribe import release_model
-from sts.schemas import JobState, write_json
+from sts.schemas import JobState, RequiredRange, write_json
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -158,10 +158,27 @@ class JobRunner:
             if state.stages.render.status == "done":
                 return False
             set_stop_requested(self.jobs_dir / job_id, False)
-            self._futures[job_id] = self._executor.submit(
-                self._run, job_id
-            )
+            self._futures[job_id] = self._executor.submit(self._run, job_id)
             return True
+
+    def refine(
+        self,
+        job_id: str,
+        *,
+        must_keep_ranges: list[RequiredRange] | None = None,
+        target_minutes: float | None = None,
+    ) -> JobState:
+        """Create a fresh story edit from saved episodes while preserving the earlier export."""
+        with self._lock:
+            self._ensure_open()
+            if self._active() is not None:
+                raise RuntimeError("Stop the current edit or wait for it to finish before refining")
+            return create_improved_job(
+                job_id,
+                jobs_dir=self.jobs_dir,
+                must_keep_ranges=must_keep_ranges,
+                target_minutes=target_minutes,
+            )
 
     def _run(self, job_id: str) -> JobState:
         try:

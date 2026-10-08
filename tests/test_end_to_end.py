@@ -30,6 +30,19 @@ from sts.schemas import (
 _STAGES = ("ingest", "transcribe", "scenes", "characters", "baseline", "llm", "select", "render")
 
 
+@pytest.fixture(autouse=True)
+def legacy_pipeline_settings(monkeypatch: pytest.MonkeyPatch, isolate_settings: None) -> None:
+    """Exercise the original visual/single-scene contract with deterministic media doubles."""
+    for key, value in {
+        "SCENE_METHOD": "visual",
+        "EXCLUDE_CREDITS": "false",
+        "SELECTION_STRATEGY": "density",
+        "LLM_BATCH_SIZE": "1",
+        "RENDER_ENCODER": "libx264",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
 @dataclass
 class _Calls:
     units: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))

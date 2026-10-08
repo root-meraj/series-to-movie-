@@ -93,6 +93,12 @@ def test_real_zip_to_condensed_movie_and_completed_resume(
     monkeypatch.setenv("WHISPER_COMPUTE", "int8")
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("ENABLE_OPENAI", "false")
+    # Keep this visual-cut fixture's original Phase 9 acceptance contract.
+    monkeypatch.setenv("SCENE_METHOD", "visual")
+    monkeypatch.setenv("EXCLUDE_CREDITS", "false")
+    monkeypatch.setenv("SELECTION_STRATEGY", "density")
+    monkeypatch.setenv("LLM_BATCH_SIZE", "1")
+    monkeypatch.setenv("RENDER_ENCODER", "libx264")
     assert main(
         [
             "run",

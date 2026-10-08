@@ -64,6 +64,12 @@ def _script() -> list[str]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def legacy_single_scene_requests(monkeypatch: pytest.MonkeyPatch, isolate_settings: None) -> None:
+    """Keep the original single-scene contract regression cases in their saved legacy mode."""
+    monkeypatch.setenv("LLM_BATCH_SIZE", "1")
+
+
 def test_summary_precedes_scores_and_context_flows_between_episodes() -> None:
     """Unsorted scenes are scored chronologically after each episode's summary update."""
     provider = llm.MockProvider(_script())
@@ -399,7 +405,8 @@ def test_qwen3_long_episode_payload_keeps_all_dialogue_and_retries_invalid_scene
         assert payload["stream"] is False
         system, user = payload["messages"]
         expected_type = (
-            SummaryResponse if user["content"].startswith("Update rolling summary")
+            SummaryResponse
+            if user["content"].startswith("Update rolling summary")
             else LLMSceneResponse
         )
         assert payload["format"] == expected_type.model_json_schema()

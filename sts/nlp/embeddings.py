@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,7 +20,39 @@ _MODEL: tuple[str, SentenceTransformer] | None = None
 def _create_model(name: str) -> SentenceTransformer:
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(name)
+    try:
+        return SentenceTransformer(name, local_files_only=True)
+    except OSError as exc:
+        # Cache-only loading avoids Hub metadata checks for every model file.
+        # Download only absent remote-model files; local paths and unrelated
+        # constructor failures must retain their original error.
+        if Path(name).is_dir() or not _cache_miss(exc):
+            raise
+        logging.getLogger(__name__).info(
+            "nlp unit-progress: embedding model %s is not fully cached; downloading", name
+        )
+        return SentenceTransformer(name)
+
+
+def _cache_miss(error: OSError) -> bool:
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    if isinstance(error, PermissionError):
+        return False
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, LocalEntryNotFoundError):
+            return True
+        current = current.__cause__
+    # Transformers can report absent cached weight files without preserving a
+    # Hub exception. Its specific missing-file errors still justify a download.
+    message = str(error).casefold()
+    return error.errno is None and (
+        "does not appear to have a file named" in message
+        or message.startswith("error no file named")
+    )
 
 
 def _get_model(name: str) -> SentenceTransformer:

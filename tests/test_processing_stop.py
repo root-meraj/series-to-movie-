@@ -159,7 +159,9 @@ def test_stop_during_scene_detection_preserves_prior_episode_and_resume_reuses_i
 ) -> None:
     """An interrupted episode never publishes partial scenes or records a processing error."""
     state = controller.run_job(
-        make_zip([("ep1.mp4", b"one"), ("ep2.mp4", b"two")]), stage="ingest"
+        make_zip([("ep1.mp4", b"one"), ("ep2.mp4", b"two")]),
+        cfg=Settings(scene_method="visual", exclude_credits=False),
+        stage="ingest",
     )
     directory = Path("data/jobs") / state.job_id
     for episode in state.stages.ingest.completed:

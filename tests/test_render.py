@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from sts.app.cli import main
 from sts.pipeline import render
+from sts.pipeline.control import ProcessingStopped
 from sts.pipeline.controller import get_status, render_saved_job
 from sts.schemas import (
     EpisodeInfo,
@@ -691,3 +692,239 @@ def test_real_ffmpeg_mixed_shapes_fractional_cuts_and_playable_join(tmp_path: Pa
     render.export_srt(_selection(clips), tmp_path, tmp_path / "movie.srt", clip_durations=durations)
     assert "First source" in (tmp_path / "movie.srt").read_text(encoding="utf-8")
     assert "Second source" in (tmp_path / "movie.srt").read_text(encoding="utf-8")
+
+
+def _request_encoder(directory: Path, encoder: str) -> None:
+    state = read_json(directory / "state.json", JobState)
+    state.params.render_encoder = encoder
+    write_json(directory / "state.json", state)
+
+
+def test_nvenc_clip_reencodes_with_same_uniform_media_contract(
+    tmp_path: Path, media_commands: list[list[str]]
+) -> None:
+    """GPU encoding changes video compression settings while preserving every clip's format."""
+    clip = _clip(1)
+    clip.source_path.write_bytes(b"video")
+    render.render_clip(clip, tmp_path / "gpu.mp4", encoder="h264_nvenc", loudnorm=True)
+    arguments = media_commands[0]
+    for flag, expected in (
+        ("-c:v", "h264_nvenc"),
+        ("-preset", "p4"),
+        ("-rc", "vbr"),
+        ("-cq", "20"),
+        ("-b:v", "0"),
+        ("-profile:v", "high"),
+        ("-level:v", "3.1"),
+        ("-video_track_timescale", "90000"),
+        ("-c:a", "aac"),
+        ("-ar", "48000"),
+        ("-ac", "2"),
+    ):
+        assert arguments[arguments.index(flag) + 1] == expected
+    assert "copy" not in arguments
+    assert "-crf" not in arguments
+    assert arguments.index("-ss") < arguments.index("-i")
+    assert arguments[arguments.index("-vf") + 1] == render._VIDEO_FILTER
+    assert arguments[arguments.index("-af") + 1] == "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+
+def test_auto_encoder_probes_actual_gpu_once_and_persists_choice(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful tiny encoding test chooses one GPU encoder for all clips and future resumes."""
+    _request_encoder(selected_job, "auto")
+    calls: list[Path] = []
+    monkeypatch.setattr(render, "_probe_nvenc", lambda directory: calls.append(directory))
+    state = render.render_job(selected_job)
+    assert calls == [selected_job]
+    assert state.stages.render.encoder == "h264_nvenc"
+    assert read_json(selected_job / "state.json", JobState).stages.render.encoder == "h264_nvenc"
+    cuts = [command for command in media_commands if "-ss" in command]
+    assert len(cuts) == 2
+    assert all(command[command.index("-c:v") + 1] == "h264_nvenc" for command in cuts)
+    media_commands.clear()
+    render.render_job(selected_job, force=True)
+    assert calls == [selected_job]
+    assert not any("-ss" in command for command in media_commands)
+
+
+def test_auto_encoder_falls_back_to_cpu_and_reuses_decision_on_resume(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unavailable GPU hardware produces a working CPU render without repeated failed probes."""
+    _request_encoder(selected_job, "auto")
+    calls: list[Path] = []
+
+    def unavailable(directory: Path) -> None:
+        calls.append(directory)
+        raise RuntimeError("No usable NVIDIA hardware")
+
+    monkeypatch.setattr(render, "_probe_nvenc", unavailable)
+    state = render.render_job(selected_job)
+    assert state.stages.render.encoder == "libx264"
+    assert state.errors == []
+    assert calls == [selected_job]
+    assert all(
+        command[command.index("-c:v") + 1] == "libx264"
+        for command in media_commands
+        if "-ss" in command
+    )
+    media_commands.clear()
+    render.render_job(selected_job, force=True)
+    assert calls == [selected_job]
+    assert not any("-ss" in command for command in media_commands)
+
+
+def test_explicit_unavailable_gpu_fails_with_actionable_cpu_option(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit GPU request cannot quietly use another encoder or begin expensive cuts."""
+    _request_encoder(selected_job, "h264_nvenc")
+
+    def unavailable(directory: Path) -> None:
+        raise RuntimeError("Driver unavailable")
+
+    monkeypatch.setattr(render, "_probe_nvenc", unavailable)
+    with pytest.raises(RuntimeError, match="RENDER_ENCODER=auto or libx264"):
+        render.render_job(selected_job)
+    state = read_json(selected_job / "state.json", JobState)
+    assert state.stages.render.status == "failed"
+    assert state.stages.render.encoder is None
+    assert state.errors[-1].stage == "render"
+    assert media_commands == []
+
+
+def test_saved_encoder_wins_over_changed_environment_and_needs_no_new_probe(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resuming an auto-selected GPU job respects its saved encoder and valid clip caches."""
+    _request_encoder(selected_job, "auto")
+    monkeypatch.setattr(render, "_probe_nvenc", lambda directory: None)
+    state = render.render_job(selected_job)
+    state.stages.render.status = "in_progress"
+    write_json(selected_job / "state.json", state)
+
+    def forbidden(directory: Path) -> None:
+        raise AssertionError("A persisted decision must not probe again")
+
+    monkeypatch.setattr(render, "_probe_nvenc", forbidden)
+    monkeypatch.setenv("RENDER_ENCODER", "libx264")
+    media_commands.clear()
+    result = render.render_job(selected_job)
+    assert result.stages.render.encoder == "h264_nvenc"
+    assert not any("-ss" in command for command in media_commands)
+
+
+def test_explicit_encoder_change_invalidates_all_clip_caches(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing a saved encoder forces uniform new clips instead of mixing CPU/GPU cache formats."""
+    render.render_job(selected_job)
+    original = read_json(selected_job / "output/clips/clip_0001.json", RenderClipDoc)
+    _request_encoder(selected_job, "h264_nvenc")
+    monkeypatch.setattr(render, "_probe_nvenc", lambda directory: None)
+    media_commands.clear()
+    state = render.render_job(selected_job, force=True)
+    assert state.stages.render.encoder == "h264_nvenc"
+    cuts = [command for command in media_commands if "-ss" in command]
+    assert len(cuts) == 2
+    updated = read_json(selected_job / "output/clips/clip_0001.json", RenderClipDoc)
+    assert original.input_sha256 != updated.input_sha256
+    _request_encoder(selected_job, "libx264")
+    media_commands.clear()
+    render.render_job(selected_job, force=True)
+    assert sum("-ss" in command for command in media_commands) == 2
+    restored = read_json(selected_job / "output/clips/clip_0001.json", RenderClipDoc)
+    assert restored.input_sha256 == original.input_sha256
+
+
+def test_cpu_cache_hash_matches_the_original_renderer_contract(tmp_path: Path) -> None:
+    """The default CPU encoder retains existing cache fingerprints while GPU adds its settings."""
+    clip = _clip(1)
+    clip.source_path.write_bytes(b"source")
+    stat = clip.source_path.stat()
+    legacy = render._hash_payload(
+        {
+            "clip": clip.model_dump(mode="json"),
+            "source_bytes": stat.st_size,
+            "source_mtime_ns": stat.st_mtime_ns,
+            "loudnorm": False,
+            "renderer": "720p30-stereo-v1",
+        }
+    )
+    assert render._clip_hash(clip, False) == legacy
+    assert render._clip_hash(clip, False, "libx264") == legacy
+    assert render._clip_hash(clip, False, "h264_nvenc") != legacy
+
+
+def test_gpu_capability_probe_encodes_frames_with_owned_stop_aware_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Encoder listings alone cannot prove hardware availability; the probe encodes six frames."""
+    calls: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(render, "_tool", lambda name: name)
+
+    def media(arguments: list[str], directory: Path) -> subprocess.CompletedProcess[str]:
+        calls.append((arguments, directory))
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(render, "run_media", media)
+    render._probe_nvenc(tmp_path)
+    arguments, directory = calls[0]
+    assert len(calls) == 1 and directory == tmp_path
+    assert "-encoders" not in arguments
+    assert arguments[arguments.index("-frames:v") + 1] == "6"
+    assert arguments[arguments.index("-c:v") + 1] == "h264_nvenc"
+    assert arguments[-3:] == ["-f", "null", "-"]
+
+
+def test_gpu_probe_process_failure_is_reported_as_unavailability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed hardware test reports its encoding failure without claiming the encoder works."""
+    monkeypatch.setattr(render, "_tool", lambda name: name)
+
+    def failure(arguments: list[str], directory: Path) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(1, arguments, stderr="Cannot load NVIDIA driver")
+
+    monkeypatch.setattr(render, "run_media", failure)
+    with pytest.raises(RuntimeError, match="Cannot load NVIDIA driver"):
+        render._probe_nvenc(tmp_path)
+
+
+def test_stopping_during_gpu_probe_preserves_resume_state_without_cpu_fallback(
+    selected_job: Path,
+    media_commands: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop during hardware testing remains a user pause, preserving the unfinished render."""
+    _request_encoder(selected_job, "auto")
+
+    def stopped(arguments: list[str], directory: Path) -> subprocess.CompletedProcess[str]:
+        raise ProcessingStopped("Stopped while testing video hardware")
+
+    monkeypatch.setattr(render, "run_media", stopped)
+    with pytest.raises(ProcessingStopped):
+        render.render_job(selected_job)
+    state = read_json(selected_job / "state.json", JobState)
+    assert state.stages.render.status == "in_progress"
+    assert state.stages.render.encoder is None
+    assert state.errors == []
+    assert media_commands == []
+
+
+def test_video_copy_is_rejected_as_a_cut_encoder(tmp_path: Path) -> None:
+    """Direct callers cannot request a keyframe-unsafe stream copy for individual cuts."""
+    with pytest.raises(ValueError, match="must be re-encoded"):
+        render.render_clip(_clip(1), tmp_path / "bad.mp4", encoder="copy")

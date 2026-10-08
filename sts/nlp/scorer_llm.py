@@ -26,6 +26,7 @@ from sts.schemas import (
     EpisodeSummaryRecord,
     ErrorRecord,
     JobState,
+    LLMBatchResponse,
     LLMSceneRecord,
     LLMSceneResponse,
     RollingSummaryDoc,
@@ -59,9 +60,7 @@ class LLMProvider(ABC):
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
         """Return a completion string, requesting JSON when json_mode is enabled."""
 
-    def complete_structured(
-        self, system: str, user: str, response_schema: dict[str, Any]
-    ) -> str:
+    def complete_structured(self, system: str, user: str, response_schema: dict[str, Any]) -> str:
         """Request structured JSON; providers without schema support use normal JSON mode."""
         return self.complete(system, user, json_mode=True)
 
@@ -84,9 +83,7 @@ class _StoppingProvider(LLMProvider):
             check_stop(self.job_dir)
             raise
 
-    def complete_structured(
-        self, system: str, user: str, response_schema: dict[str, Any]
-    ) -> str:
+    def complete_structured(self, system: str, user: str, response_schema: dict[str, Any]) -> str:
         """Keep schema-constrained requests and their retries behind the same stop checks."""
         check_stop(self.job_dir)
         try:
@@ -188,9 +185,7 @@ class OllamaProvider(LLMProvider):
         """Request bounded answers, using 32K context without thinking for Qwen3 models."""
         return self._complete(system, user, "json" if json_mode else None)
 
-    def complete_structured(
-        self, system: str, user: str, response_schema: dict[str, Any]
-    ) -> str:
+    def complete_structured(self, system: str, user: str, response_schema: dict[str, Any]) -> str:
         """Constrain local generation to the response contract, including reason word limits."""
         system += "\nRequired response JSON schema:\n" + json.dumps(response_schema)
         return self._complete(system, user, response_schema)
@@ -246,6 +241,23 @@ class MockProvider(LLMProvider):
             return response
         if user.startswith("Update rolling summary"):
             return json.dumps({"summary": "Mock story context for deterministic testing."})
+        if user.startswith("Score story batch"):
+            data = json.loads(
+                user.split("\nScene data:\n", 1)[1].split("\nInvalid response.", 1)[0]
+            )
+            return json.dumps(
+                {
+                    "scores": [
+                        {
+                            "scene_id": scene["scene_id"],
+                            "score": 5,
+                            "plot_advance": False,
+                            "reason": "Deterministic mock score; no model judgment.",
+                        }
+                        for scene in data["scenes"]
+                    ]
+                }
+            )
         return json.dumps(
             {
                 "score": 5,
@@ -265,9 +277,48 @@ def create_provider(cfg: Settings) -> LLMProvider:
 
 
 def _complete_json(
-    provider: LLMProvider, system: str, user: str, document_type: type[ResponseDoc]
+    provider: LLMProvider,
+    system: str,
+    user: str,
+    document_type: type[ResponseDoc],
+    *,
+    expected_ids: list[str] | None = None,
 ) -> ResponseDoc:
     response_schema = document_type.model_json_schema()
+    if document_type is LLMBatchResponse and expected_ids is not None:
+        # Tuple items constrain coverage before generation, avoiding omitted or
+        # invented IDs from small local models. Inline records avoid nested refs.
+        # Ollama's grammar converter supports draft-7 tuple items, not prefixItems.
+        response_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scores"],
+            "properties": {
+                "scores": {
+                    "type": "array",
+                    "minItems": len(expected_ids),
+                    "maxItems": len(expected_ids),
+                    "items": [
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["scene_id", "reason", "plot_advance", "score"],
+                            "properties": {
+                                "scene_id": {"type": "string", "const": identifier},
+                                # Ask for grounded evidence before the numeric judgment.
+                                "reason": LLMSceneResponse.model_json_schema()["properties"][
+                                    "reason"
+                                ],
+                                "plot_advance": {"type": "boolean"},
+                                "score": {"type": "integer", "minimum": 1, "maximum": 10},
+                            },
+                        }
+                        for identifier in expected_ids
+                    ],
+                    "additionalItems": False,
+                }
+            },
+        }
     original_user = user
     feedback = "Return only JSON matching the requested schema and limits."
     for attempt in range(3):
@@ -277,11 +328,22 @@ def _complete_json(
                 r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.DOTALL | re.IGNORECASE
             )
             payload = fenced.group(1) if fenced else raw
-            return document_type.model_validate_json(payload)
+            response = document_type.model_validate_json(payload)
+            if isinstance(response, LLMBatchResponse) and expected_ids is not None:
+                records = {score.scene_id: score for score in response.scores}
+                if set(records) != set(expected_ids):
+                    raise InvalidCompletionError("Batch response omitted or added scene IDs")
+                response.scores = [records[identifier] for identifier in expected_ids]
+            return response
         except ValidationError as exc:
             feedback = _validation_feedback(exc)
         except InvalidCompletionError:
-            feedback = "Return a complete JSON object matching the requested schema."
+            feedback = (
+                "Return a complete JSON object with every requested scene_id exactly once, "
+                "with no extra IDs."
+                if expected_ids is not None
+                else "Return a complete JSON object matching the requested schema."
+            )
         logging.getLogger(__name__).warning(
             "nlp llm unit-progress: invalid JSON response (%d/3): %s", attempt + 1, feedback
         )
@@ -302,7 +364,8 @@ def _validation_feedback(exc: ValidationError) -> str:
     messages: list[str] = []
     for error in exc.errors(include_input=False, include_context=False, include_url=False):
         location = error["loc"]
-        message = requirements.get(location[0]) if location else None
+        field = next((part for part in reversed(location) if part in requirements), None)
+        message = requirements.get(field)
         if message is None:
             message = "Return only the required fields in a valid JSON object."
         if message not in messages:
@@ -371,6 +434,73 @@ def _score_one(
     return LLMSceneRecord(scene_id=scene.scene_id, **response.model_dump())
 
 
+def _score_batch(
+    scenes: list[SceneRecord],
+    characters: CharacterTable,
+    summary: str,
+    cfg: Settings,
+    provider: LLMProvider,
+    show: str,
+) -> list[LLMSceneRecord]:
+    data = {
+        "scenes": [
+            {
+                "scene_id": scene.scene_id,
+                "start": scene.start,
+                "end": scene.end,
+                "transcript": scene.transcript,
+            }
+            for scene in scenes
+        ]
+    }
+    user = (
+        "Score story batch. Judge each complete story block using its own text and the "
+        "neighboring blocks. Keep causal setups, irreversible outcomes, revelations, "
+        "character decisions, and their consequences. Use 8-10 only for strong story "
+        "evidence, 4-7 for useful context, 1-3 for repetition or incidental dialogue. "
+        "Do not confuse a camera shot with a complete event. Silent intervals may contain "
+        "action: do not invent what happens or declare them unimportant just for lacking "
+        "dialogue. If a block has dialogue, read it; never call it silent. Write reasons "
+        "in English, naming a specific action or revelation supported by that block's "
+        "dialogue. Do not invent personal histories, mysteries, or visual events. "
+        "Reasons must refer to evidence in that block, not repeat a generic "
+        'episode summary. Return JSON {"scores": [{"scene_id": "requested ID", '
+        '"score": 1, "plot_advance": false, "reason": "1-15 words"}]}, '
+        "one entry for every requested ID, without omissions or extra IDs."
+        "\nScene data:\n" + json.dumps(data, ensure_ascii=False)
+    )
+    return _complete_json(
+        provider,
+        _editor_prompt(characters, summary, cfg, show),
+        user,
+        LLMBatchResponse,
+        expected_ids=[scene.scene_id for scene in scenes],
+    ).scores
+
+
+def _scoring_units(
+    group: list[SceneRecord],
+    start: int,
+    cfg: Settings,
+) -> list[list[SceneRecord]]:
+    # Limit both scene count and prompt text for smaller local models.
+    batches: list[list[SceneRecord]] = []
+    current: list[SceneRecord] = []
+    characters_in_batch = 0
+    for scene in group[start:]:
+        if current and (
+            len(current) >= cfg.llm_batch_size
+            or characters_in_batch + len(scene.transcript) > 12000
+        ):
+            batches.append(current)
+            current, characters_in_batch = [], 0
+        current.append(scene)
+        characters_in_batch += len(scene.transcript)
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _merge_score(baseline: ScoreRecord, result: LLMSceneRecord) -> ScoreRecord:
     return ScoreRecord(
         scene_id=baseline.scene_id,
@@ -392,17 +522,32 @@ def score_scenes(
 ) -> tuple[list[ScoreRecord], str]:
     """Summarize each episode before scoring its scenes, returning scores and new story context."""
     results: list[ScoreRecord] = []
-    for episode_scenes in _group_episodes(scenes):
+    for episode_scenes in _group_episodes([scene for scene in scenes if not scene.is_credit]):
         if provider is None:
             provider = create_provider(cfg)
         rolling_summary = _summarize(
             episode_scenes, characters, rolling_summary, cfg, provider, show
         )
-        for index, scene in enumerate(episode_scenes, 1):
-            result = _score_one(
-                scene, index, len(episode_scenes), characters, rolling_summary, cfg, provider, show
+        for batch in _scoring_units(episode_scenes, 0, cfg):
+            judged = (
+                [
+                    _score_one(
+                        batch[0],
+                        episode_scenes.index(batch[0]) + 1,
+                        len(episode_scenes),
+                        characters,
+                        rolling_summary,
+                        cfg,
+                        provider,
+                        show,
+                    )
+                ]
+                if cfg.llm_batch_size == 1
+                else _score_batch(batch, characters, rolling_summary, cfg, provider, show)
             )
-            results.append(_merge_score(ScoreRecord(scene_id=scene.scene_id), result))
+            results.extend(
+                _merge_score(ScoreRecord(scene_id=item.scene_id), item) for item in judged
+            )
     return results, rolling_summary
 
 
@@ -411,7 +556,7 @@ def _checkpoint_hash(
 ) -> str:
     payload = json.dumps(
         {
-            "prompt_version": 1,
+            "prompt_version": 2 if cfg.llm_batch_size > 1 else 1,
             "provider": cfg.llm_provider,
             "model": cfg.llm_model,
             "ollama_base_url": cfg.ollama_base_url if cfg.llm_provider == "ollama" else None,
@@ -480,7 +625,7 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
         if state.stages.nlp.baseline.status != "done":
             raise ValueError("LLM scoring requires completed baseline scoring")
         scenes = read_json(job_dir / "scenes.json", ScenesDoc).root
-        groups = _group_episodes(scenes)
+        groups = _group_episodes([scene for scene in scenes if not scene.is_credit])
         planned = [group[0].episode for group in groups]
         if not groups or set(planned) != {item.episode for item in state.stages.ingest.episodes}:
             raise ValueError("LLM scene episodes must match the nonempty ingestion manifest")
@@ -506,9 +651,10 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
         cfg = Settings(
             llm_provider=state.params.llm_provider,
             llm_model=state.params.llm_model,
-            ollama_base_url=state.params.ollama_base_url,
+            ollama_base_url=state.params.ollama_base_url or runtime.ollama_base_url,
             target_minutes=state.params.target_seconds / 60,
             season_number=state.params.season_number,
+            llm_batch_size=state.params.llm_batch_size,
         )
         show = state.params.name or "Untitled Show"
         stage.completed, stage.pending = [], planned.copy()
@@ -526,6 +672,7 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
                 path, episode, fingerprint, [scene.scene_id for scene in group]
             )
             stage.active_episode = episode
+            stage.scene_count = len(group)
             stage.summary_done = cache.summary is not None
             stage.completed_scenes = [record.scene_id for record in cache.scores]
             write_json(state_path, state)
@@ -540,27 +687,36 @@ def build_llm(job_dir: Path, *, provider: LLMProvider | None = None) -> JobState
             results.update({record.scene_id: record for record in cache.scores})
             _publish(job_dir, state, baselines, results, summaries)
             logger.info("nlp llm unit-progress: %s summary ready", episode)
-            for index in range(len(cache.scores), len(group)):
+            for batch in _scoring_units(group, len(cache.scores), cfg):
                 check_stop(job_dir)
                 if provider is None:
                     provider = _StoppingProvider(create_provider(cfg), job_dir)
-                result = _score_one(
-                    group[index],
-                    index + 1,
-                    len(group),
-                    characters,
-                    cache.summary,
-                    cfg,
-                    provider,
-                    show,
+                judged = (
+                    [
+                        _score_one(
+                            batch[0],
+                            len(cache.scores) + 1,
+                            len(group),
+                            characters,
+                            cache.summary,
+                            cfg,
+                            provider,
+                            show,
+                        )
+                    ]
+                    if cfg.llm_batch_size == 1
+                    else _score_batch(batch, characters, cache.summary, cfg, provider, show)
                 )
-                cache.scores.append(result)
+                cache.scores.extend(judged)
                 write_json(path, cache)
-                results[result.scene_id] = result
+                results.update({result.scene_id: result for result in judged})
                 stage.completed_scenes = [record.scene_id for record in cache.scores]
                 _publish(job_dir, state, baselines, results, summaries)
                 logger.info(
-                    "nlp llm unit-progress: %s done (%d/%d)", result.scene_id, index + 1, len(group)
+                    "nlp llm unit-progress: %s batch done (%d/%d)",
+                    episode,
+                    len(cache.scores),
+                    len(group),
                 )
             previous = cache.summary
             stage.completed.append(episode)

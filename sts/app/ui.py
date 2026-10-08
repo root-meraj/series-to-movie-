@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import logging
+from decimal import ROUND_HALF_UP, Decimal
 from functools import partial
 from pathlib import Path
 from time import time
@@ -17,7 +18,7 @@ from sts.app.model_cache import install_model_cache
 from sts.app.runner import JobRunner
 from sts.config import Settings
 from sts.pipeline.controller import get_status
-from sts.schemas import JobState, SelectionDoc, StageState, read_json
+from sts.schemas import JobState, RequiredRange, SelectionDoc, StageState, read_json
 
 _STYLES = """
 <style>
@@ -232,7 +233,15 @@ def _stage_progress(state: JobState, name: str) -> float:
             fraction = min(0.99, current.processed_seconds / current.duration)
             return (len(stage.completed) + fraction) / total
     if name == "nlp" and stage.status != "done":
-        return sum(_fraction(getattr(stage, key)) for key in ("characters", "baseline", "llm")) / 3
+        story = stage.llm
+        fraction = _fraction(story)
+        total = len(story.completed) + len(story.pending)
+        if story.active_episode and story.scene_count and total and story.status != "done":
+            active = (
+                0.1 * story.summary_done + 0.9 * len(story.completed_scenes) / story.scene_count
+            )
+            fraction = (len(story.completed) + min(0.99, active)) / total
+        return (_fraction(stage.characters) + _fraction(stage.baseline) + fraction) / 3
     if name == "render" and stage.status != "done":
         return (_fraction(stage) * 0.8) + 0.1 * stage.video_done + 0.1 * stage.subtitles_done
     return _fraction(stage)
@@ -252,6 +261,14 @@ def _stage_detail(state: JobState, name: str) -> str:
         }
         for key, label in names.items():
             if getattr(stage, key).status != "done":
+                if key == "llm" and stage.llm.active_episode:
+                    story = stage.llm
+                    if not story.summary_done:
+                        return f"{story.active_episode} · Reading the story"
+                    return (
+                        f"{story.active_episode} · "
+                        f"{len(story.completed_scenes)} of {story.scene_count} blocks"
+                    )
                 return label if stage.status == "in_progress" else "Waiting"
     completed, pending = getattr(stage, "completed", []), getattr(stage, "pending", [])
     if completed or pending:
@@ -274,9 +291,7 @@ def _transcription_activity(state: JobState, directory: Path, *, running: bool) 
             return f"Preparing audio for {episode}."
         if current.activity == "loading_model":
             return f"Loading Whisper {state.params.whisper_model} for {episode}."
-    source = next(
-        (item for item in state.stages.ingest.episodes if item.episode == episode), None
-    )
+    source = next((item for item in state.stages.ingest.episodes if item.episode == episode), None)
     audio_path = directory / "audio" / f"{episode}.wav"
     try:
         metadata = audio_path.stat()
@@ -286,8 +301,10 @@ def _transcription_activity(state: JobState, directory: Path, *, running: bool) 
         return f"Preparing audio for {episode}. Counters advance after each episode finishes."
     minutes = f" · {source.duration / 60:.1f} min of source audio" if source else ""
     age_minutes = max(0, int((time() - metadata.st_mtime) / 60))
-    device = "automatic device selection" if state.params.whisper_device == "auto" else (
-        state.params.whisper_device.upper()
+    device = (
+        "automatic device selection"
+        if state.params.whisper_device == "auto"
+        else (state.params.whisper_device.upper())
     )
     decoded = (
         f"Decoded {current.processed_seconds / 60:.1f} of {current.duration / 60:.1f} min. "
@@ -459,6 +476,17 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                 "Preview mode uses sample scores. Choose a configured model for story-aware edits."
             )
         with st.expander("Advanced settings"):
+            scene_method = st.selectbox(
+                "Editing approach",
+                ["Fast · subtitle story blocks", "Visual scene boundaries"],
+                index=0 if settings.scene_method == "subtitles" else 1,
+                key="scene_method",
+                help="Timed story blocks keep dialogue and nearby action together. "
+                "Visual boundaries scan the episode for camera cuts and take longer.",
+            )
+            remove_credits = st.checkbox(
+                "Remove end credits", value=settings.exclude_credits, key="exclude_credits"
+            )
             dialogue_source = st.selectbox(
                 "Dialogue source",
                 list(_DIALOGUE_SOURCES),
@@ -530,6 +558,8 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
                     "whisper_device": compute_device,
                     "whisper_compute": "int8" if compute_device == "cpu" else "auto",
                     "transcript_source": _DIALOGUE_SOURCES[dialogue_source],
+                    "scene_method": "subtitles" if scene_method.startswith("Fast") else "visual",
+                    "exclude_credits": remove_credits,
                 }
             )
             if local_path is not None:
@@ -644,6 +674,16 @@ def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -
         st.caption("You can leave this page while editing continues. Your progress is saved.")
 
 
+def _moment_time(seconds: float) -> str:
+    """Format saved source seconds as a clock timestamp, rounded to tenths."""
+    tenths = int((Decimal(str(seconds)) * 10).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    hours, remainder = divmod(tenths, 36000)
+    minutes, remainder = divmod(remainder, 600)
+    whole_seconds, fraction = divmod(remainder, 10)
+    ending = f"{whole_seconds:02d}" + (f".{fraction}" if fraction else "")
+    return f"{hours}:{minutes:02d}:{ending}" if hours else f"{minutes}:{ending}"
+
+
 def _project_view(runner: JobRunner, job_id: str) -> None:
     try:
         state = runner.get_state(job_id)
@@ -665,6 +705,7 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
     )
     episodes = state.stages.ingest.episode_count
     kept = str(selection.stats.scenes_kept) if selection else "—"
+    film_runtime = f"{selection.selected_total_seconds / 60:.1f} min" if selection else "—"
     original_seconds = (
         selection.stats.original_seconds
         if selection
@@ -673,16 +714,30 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
     original = (
         f"{original_seconds / 3600:.1f} h"
         if original_seconds >= 3600
-        else f"{original_seconds / 60:g} min" if original_seconds else "—"
+        else f"{original_seconds / 60:g} min"
+        if original_seconds
+        else "—"
     )
     _html(
         '<div class="stats">'
         f'<div class="stat"><label>Episodes</label><strong>{episodes:02d}</strong></div>'
         '<div class="stat"><label>Target runtime</label>'
         f"<strong>{state.params.target_seconds / 60:g} min</strong></div>"
-        f'<div class="stat"><label>Scenes kept</label><strong>{kept}</strong></div>'
+        f'<div class="stat"><label>Film runtime</label><strong>{film_runtime}</strong></div>'
         f'<div class="stat"><label>Original runtime</label><strong>{original}</strong></div></div>'
     )
+    for required in state.params.must_keep_ranges:
+        st.caption(
+            f"Protected moment · {required.episode} · "
+            f"{_moment_time(required.start)}–{_moment_time(required.end)} · Saved request"
+        )
+    if selection:
+        st.caption(f"{kept} story clips selected in episode order.")
+        if selection.selected_total_seconds < state.params.target_seconds * 0.98:
+            st.warning(
+                "This edit is shorter than your target. Refine it to keep connected story "
+                "sequences and use more of the available runtime."
+            )
     error = runner.error(job_id)
     if running:
         _stop_processing(runner, job_id, key=f"stop_{job_id}")
@@ -734,6 +789,8 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
         )
     with export_column, st.container(border=True, key="export_panel"):
         _exports(state, directory, selection)
+    if not running and state.stages.transcribe.status == "done":
+        _refine_edit(runner, state)
     if state.params.llm_provider == "mock":
         st.caption("Preview edit · This project uses sample story scores.")
     if state.errors:
@@ -743,6 +800,54 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
     if state.stages.render.status == "done" and st.session_state.get("was_processing", False):
         st.session_state.was_processing = False
         st.rerun()
+
+
+def _refine_edit(runner: JobRunner, state: JobState) -> None:
+    with st.expander("Refine the story"):
+        st.caption(
+            "Create a new edit with connected story sequences and confirmed end credits "
+            "removed. Your earlier movie is kept. You can protect a moment the edit missed."
+        )
+        protect = st.checkbox("Keep a specific moment", key=f"protect_{state.job_id}")
+        required = list(state.params.must_keep_ranges)
+        if protect:
+            episode = st.selectbox(
+                "Episode",
+                [item.episode for item in state.stages.ingest.episodes],
+                key=f"required_episode_{state.job_id}",
+            )
+            start = st.number_input(
+                "Moment starts · minutes",
+                min_value=0.0,
+                value=0.0,
+                step=0.1,
+                key=f"required_start_{state.job_id}",
+            )
+            end = st.number_input(
+                "Moment ends · minutes",
+                min_value=0.0,
+                value=1.0,
+                step=0.1,
+                key=f"required_end_{state.job_id}",
+            )
+            st.caption(
+                "The new edit keeps the whole surrounding story blocks, including nearby action."
+            )
+        if st.button(
+            "Create refined film",
+            type="primary",
+            disabled=runner.busy,
+            key=f"refine_{state.job_id}",
+        ):
+            try:
+                if protect:
+                    required.append(RequiredRange(episode=episode, start=start * 60, end=end * 60))
+                refined = runner.refine(state.job_id, must_keep_ranges=required)
+                runner.start(refined.job_id)
+                st.session_state.active_job = refined.job_id
+                st.rerun()
+            except (OSError, ValueError, RuntimeError) as exc:
+                st.error(f"Couldn't refine this edit: {exc}")
 
 
 def main() -> None:

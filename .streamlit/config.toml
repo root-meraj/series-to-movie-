@@ -10,6 +10,9 @@ font = "sans serif"
 address = "127.0.0.1"
 headless = true
 maxUploadSize = 2048
+# Model libraries expose lazy optional modules; inspecting them on every rerun
+# imports unrelated vision backends. Reload the page/server after code changes.
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false

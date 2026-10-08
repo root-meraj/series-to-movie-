@@ -797,3 +797,80 @@ Phase	Deliverable	Definition of Done
 
 After each phase: run ruff check and pytest, print results, and STOP.
 
+## Phase 10 maintenance: subtitle story editing contracts
+
+The user requested faster subtitle-based editing, removal of episode credits,
+complete important sequences, and a film close to its requested runtime. New jobs
+use these settings; historical saved jobs retain the earlier behavior until the
+user creates a refined edit. This maintenance does not begin Phase 11.
+
+Additional `state.json` params (existing keys are unchanged):
+
+```json
+{
+  "scene_method": "subtitles",
+  "scene_block_seconds": 60.0,
+  "exclude_credits": true,
+  "selection_strategy": "story",
+  "must_keep_ranges": [{"episode": "E01", "start": 210.0, "end": 390.0}],
+  "llm_batch_size": 8,
+  "render_encoder": "auto",
+  "parent_job_id": null
+}
+```
+
+Accepted methods: `subtitles|visual`; strategies: `story|density`; encoders:
+`auto|libx264|h264_nvenc`. Block duration is 15–180 seconds; batch size is 1–12.
+Required ranges use float seconds and must fit known episodes and available
+noncredit footage. `parent_job_id` identifies a refined edit's source job.
+Missing fields in historical JSON default to visual/density, credits disabled,
+one scene per request, and libx264, preserving completed checkpoints.
+
+Additional scene key: `"is_credit": false`. Keep the full source timeline in
+`scenes.json`; split exactly at confirmed credit boundaries. Exclude credit
+records from LLM summaries/scoring and story selection. Unknown tail footage,
+including quiet action and postcredit dialogue, stays eligible.
+
+`transcripts/E01.credits.json`:
+
+```json
+{
+  "episode": "E01", "duration": 2780.788,
+  "ranges": [{"start": 2532.0, "end": 2780.788, "evidence": "chapter: End Credits"}]
+}
+```
+
+Ranges must be ordered, disjoint, and within episode duration. Prefer chapter
+metadata; otherwise inspect sparse tail frames for sustained credit layouts.
+Cache this document per episode. Detection failure preserves uncertain footage.
+
+Batch LLM response (all requests still live only in `sts/nlp/scorer_llm.py`):
+
+```json
+{"scores": [{"scene_id": "E01_s0001", "score": 8, "plot_advance": true,
+             "reason": "Reveals the central conflict"}]}
+```
+
+Validate every requested ID exactly once, strict types, and 1–15-word reasons;
+retry invalid batches at most three times. Commit complete valid batches
+atomically to the existing per-episode checkpoint. `stages.nlp.llm.scene_count`
+stores the active episode's noncredit block count for live progress.
+
+Subtitle windows use cue boundaries and gaps, retaining full silent/action
+coverage; they skip full-video camera-cut detection. Story selection groups short
+adjacent shots, preserves required ranges plus season story bookends, considers
+causal setup/context and episode coverage, and fills the budget with whole blocks.
+Do not drop related conversations merely for semantic similarity. Count selected
+editing blocks in `stats.scenes_kept`; `selected.json` otherwise keeps its schema.
+
+`stages.render.encoder` records `libx264|h264_nvenc|null`. Auto mode probes usable
+hardware encoding once, falls back to libx264, and persists the chosen encoder.
+Resumed clips use uniform settings and the saved encoder; changing it invalidates
+the relevant cache. All cuts are still re-encoded, followed by safe concat-copy.
+
+Refinement creates a separate job with saved subtitles/audio/media reused and
+fresh scene/scoring/selection/render checkpoints. Mutable JSON is independently
+copied; original completed state and movie remain intact. The UI exposes a
+required episode/time range and actual film runtime, and warns about a substantial
+runtime shortfall.
+

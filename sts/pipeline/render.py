@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -37,6 +37,72 @@ _VIDEO_FILTER = (
     "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
 )
 _RENDER_VERSION = "720p30-stereo-v1"
+_Encoder = Literal["libx264", "h264_nvenc"]
+
+
+def _encoder_arguments(encoder: _Encoder) -> list[str]:
+    if encoder == "h264_nvenc":
+        return ["-c:v", encoder, "-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+    if encoder == "libx264":
+        return ["-c:v", encoder, "-preset", "veryfast", "-crf", "20"]
+    raise ValueError("encoder must be libx264 or h264_nvenc; video cuts must be re-encoded")
+
+
+def _probe_nvenc(job_dir: Path) -> None:
+    check_stop(job_dir)
+    arguments = [
+        _tool("ffmpeg"),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=1280x720:r=30:d=0.2",
+        "-frames:v",
+        "6",
+        "-pix_fmt",
+        "yuv420p",
+        *_encoder_arguments("h264_nvenc"),
+        "-profile:v",
+        "high",
+        "-level:v",
+        "3.1",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        run_media(arguments, job_dir)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip()[-1000:]
+        raise RuntimeError(f"NVIDIA video encoding test failed: {detail}") from exc
+    check_stop(job_dir)
+
+
+def _choose_encoder(
+    job_dir: Path,
+    requested: Literal["auto", "libx264", "h264_nvenc"],
+    persisted: _Encoder | None,
+) -> _Encoder:
+    if persisted is not None and (requested == "auto" or requested == persisted):
+        return persisted
+    if requested == "libx264":
+        return "libx264"
+    try:
+        _probe_nvenc(job_dir)
+    except (OSError, RuntimeError) as exc:
+        if requested == "h264_nvenc":
+            raise RuntimeError(
+                "NVIDIA video encoding is unavailable. Use RENDER_ENCODER=auto or libx264 "
+                "to render with the CPU, or check the NVIDIA driver and FFmpeg installation."
+            ) from exc
+        logging.getLogger(__name__).info(
+            "render unit-progress: NVIDIA encoder unavailable; using CPU encoding"
+        )
+        return "libx264"
+    return "h264_nvenc"
 
 
 def _tool(name: str) -> str:
@@ -50,9 +116,7 @@ def _run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         output = Path(arguments[-1])
         job_dir = (
-            output.parent.parent.parent
-            if output.parent.name == "clips"
-            else output.parent.parent
+            output.parent.parent.parent if output.parent.name == "clips" else output.parent.parent
         )
         if (job_dir / "processing_control.json").is_file():
             return run_media(arguments, job_dir)
@@ -149,13 +213,21 @@ def _probe_encoded(path: Path, expected_duration: float | None = None) -> float:
     return duration
 
 
-def render_clip(clip: SelectedClip, out_path: Path, *, loudnorm: bool = False) -> float:
+def render_clip(
+    clip: SelectedClip,
+    out_path: Path,
+    *,
+    loudnorm: bool = False,
+    encoder: _Encoder = "libx264",
+) -> float:
     """Re-encode one interval to uniform H.264/AAC MP4 and return its probed duration.
 
     All clips use 1280x720 letterboxing, square pixels, 30 fps, yuv420p, a 90 kHz
     video time base, and 48 kHz stereo AAC. The destination changes only after
     encoding and metadata validation succeed. Both source streams are required.
+    The GPU and CPU encoders share the same media contract; neither stream-copies cuts.
     """
+    video_arguments = _encoder_arguments(encoder)
     if not clip.source_path.is_file():
         raise FileNotFoundError(clip.source_path)
     duration = clip.end - clip.start
@@ -179,12 +251,7 @@ def render_clip(clip: SelectedClip, out_path: Path, *, loudnorm: bool = False) -
             "0:a:0",
             "-vf",
             _VIDEO_FILTER,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
+            *video_arguments,
             "-profile:v",
             "high",
             "-level:v",
@@ -330,17 +397,19 @@ def export_srt(
     _write_text(out_path, "".join(cues))
 
 
-def _clip_hash(clip: SelectedClip, loudnorm: bool) -> str:
+def _clip_hash(clip: SelectedClip, loudnorm: bool, encoder: _Encoder = "libx264") -> str:
     stat = clip.source_path.stat()
-    return _hash_payload(
-        {
-            "clip": clip.model_dump(mode="json"),
-            "source_bytes": stat.st_size,
-            "source_mtime_ns": stat.st_mtime_ns,
-            "loudnorm": loudnorm,
-            "renderer": _RENDER_VERSION,
-        }
-    )
+    payload: dict[str, object] = {
+        "clip": clip.model_dump(mode="json"),
+        "source_bytes": stat.st_size,
+        "source_mtime_ns": stat.st_mtime_ns,
+        "loudnorm": loudnorm,
+        "renderer": _RENDER_VERSION,
+    }
+    if encoder != "libx264":
+        payload["encoder"] = encoder
+        payload["encoder_arguments"] = _encoder_arguments(encoder)
+    return _hash_payload(payload)
 
 
 def _cached_clip(path: Path, clip: SelectedClip, fingerprint: str) -> RenderClipDoc | None:
@@ -410,16 +479,20 @@ def render_job(job_dir: Path, *, loudnorm: bool | None = None, force: bool = Fal
         _tool("ffprobe")
         selection = read_json(job_dir / "selected.json", SelectionDoc)
         _validate_clips(selection, state)
-        fingerprints = [_clip_hash(clip, stage.loudnorm) for clip in selection.clips]
+        transcript_hashes = [
+            _sha256(job_dir / "transcripts" / f"{identifier}.transcript.json")
+            for identifier in dict.fromkeys(clip.episode for clip in selection.clips)
+        ]
+        stage.encoder = _choose_encoder(job_dir, state.params.render_encoder, stage.encoder)
+        write_json(state_path, state)
+        logger.info("render unit-progress: using %s encoding", stage.encoder)
+        fingerprints = [_clip_hash(clip, stage.loudnorm, stage.encoder) for clip in selection.clips]
         fingerprint = _hash_payload(
             {
                 "concat_version": "copyts-v1",
                 "selection": selection.model_dump(mode="json"),
                 "clips": fingerprints,
-                "transcripts": [
-                    _sha256(job_dir / "transcripts" / f"{identifier}.transcript.json")
-                    for identifier in dict.fromkeys(clip.episode for clip in selection.clips)
-                ],
+                "transcripts": transcript_hashes,
             }
         )
         if fingerprint != stage.input_sha256 or was_done:
@@ -452,7 +525,14 @@ def render_job(job_dir: Path, *, loudnorm: bool | None = None, force: bool = Fal
                     index,
                     len(selection.clips),
                 )
-                duration = render_clip(clip, path, loudnorm=stage.loudnorm)
+                if stage.encoder == "libx264":
+                    # Preserve the public CPU seam used by existing callers and
+                    # the original encoder's reusable cache fingerprints.
+                    duration = render_clip(clip, path, loudnorm=stage.loudnorm)
+                else:
+                    duration = render_clip(
+                        clip, path, loudnorm=stage.loudnorm, encoder=stage.encoder
+                    )
                 checkpoint = RenderClipDoc(
                     scene_id=clip.scene_id,
                     input_sha256=clip_fingerprint,

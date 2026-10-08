@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
@@ -19,9 +21,11 @@ from sts.pipeline.scenes import build_scenes
 from sts.pipeline.selector import build_selection
 from sts.pipeline.transcribe import transcribe_job
 from sts.schemas import (
+    EpisodeInfo,
     ErrorRecord,
     JobParams,
     JobState,
+    RequiredRange,
     StageName,
     StageState,
     read_json,
@@ -154,6 +158,13 @@ def create_job(
         subtitle_language=settings.subtitle_language,
         detector_threshold=settings.detector_threshold,
         min_scene_seconds=settings.min_scene_seconds,
+        scene_method=settings.scene_method,
+        scene_block_seconds=settings.scene_block_seconds,
+        exclude_credits=settings.exclude_credits,
+        selection_strategy=settings.selection_strategy,
+        must_keep_ranges=settings.must_keep_ranges,
+        llm_batch_size=settings.llm_batch_size,
+        render_encoder=settings.render_encoder,
         max_characters=settings.max_characters,
         sbert_model=settings.sbert_model,
         min_clip_seconds=settings.min_clip_seconds,
@@ -189,6 +200,108 @@ def run_job(
     _validate_stage(stage)
     state = create_job(zip_path, target_minutes, name=name, jobs_dir=jobs_dir, cfg=cfg)
     return _run_stages(_job_dir(state.job_id, jobs_dir), stage)
+
+
+def create_improved_job(
+    job_id: str,
+    *,
+    jobs_dir: Path = Path("data/jobs"),
+    must_keep_ranges: list[RequiredRange] | None = None,
+    target_minutes: float | None = None,
+) -> JobState:
+    """Create a fresh edit from saved media/subtitles, preserving the earlier movie.
+
+    Local hard links reuse media without copying a season or depending on the old
+    job directory. Filesystems without hard links fall back to ordinary copies.
+    Scene windows and NLP are rebuilt with the current story settings; completed
+    dialogue extraction and valid character-mention caches are reused.
+    """
+    source_dir = _job_dir(job_id, jobs_dir)
+    previous = read_json(source_dir / "state.json", JobState)
+    if (
+        previous.stages.transcribe.status != "done"
+        or previous.stages.ingest.status != "done"
+        or not previous.stages.ingest.episodes
+    ):
+        raise ValueError("Complete episode import and dialogue capture before refining an edit")
+    requested_ranges = (
+        must_keep_ranges if must_keep_ranges is not None else previous.params.must_keep_ranges
+    )
+    durations = {item.episode: item.duration for item in previous.stages.ingest.episodes}
+    for interval in requested_ranges:
+        if interval.episode not in durations or interval.end > durations[interval.episode]:
+            raise ValueError("A required moment must lie within a known episode")
+    for item in previous.stages.ingest.episodes:
+        for required in (
+            item.source_path,
+            source_dir / f"audio/{item.episode}.wav",
+            source_dir / f"audio/{item.episode}.rms.json",
+            source_dir / f"transcripts/{item.episode}.transcript.json",
+        ):
+            if not required.is_file():
+                raise FileNotFoundError(f"Saved episode artifact missing: {required.name}")
+    cfg = Settings(
+        transcript_source=previous.params.transcript_source,
+        subtitle_language=previous.params.subtitle_language,
+        whisper_model=previous.params.whisper_model,
+        whisper_device=previous.params.whisper_device,
+        whisper_compute=previous.params.whisper_compute,
+        llm_provider=previous.params.llm_provider or Settings().llm_provider,
+        llm_model=previous.params.llm_model or Settings().llm_model,
+        ollama_base_url=previous.params.ollama_base_url or Settings().ollama_base_url,
+        season_number=previous.params.season_number,
+        scene_method="subtitles",
+        selection_strategy="story",
+        exclude_credits=True,
+        must_keep_ranges=requested_ranges,
+        llm_batch_size=8,
+        render_encoder="auto",
+    )
+    state = create_job(
+        previous.params.zip_path or source_dir / "input/source.zip",
+        target_minutes if target_minutes is not None else previous.params.target_seconds / 60,
+        name=f"{previous.params.name or 'Untitled season'} · refined",
+        jobs_dir=jobs_dir,
+        cfg=cfg,
+    )
+    directory = _job_dir(state.job_id, jobs_dir)
+    state.params.parent_job_id = job_id
+    state.params.zip_sha256 = previous.params.zip_sha256
+    manifest: list[EpisodeInfo] = []
+    for item in previous.stages.ingest.episodes:
+        destination = directory / "episodes" / item.source_path.name
+        try:
+            os.link(item.source_path, destination)
+        except OSError:
+            shutil.copy2(item.source_path, destination)
+        manifest.append(item.model_copy(update={"source_path": destination.resolve()}))
+        for relative in (
+            f"audio/{item.episode}.wav",
+            f"audio/{item.episode}.rms.json",
+            f"transcripts/{item.episode}.transcript.json",
+            f"transcripts/{item.episode}.characters.json",
+            f"transcripts/{item.episode}.credits.json",
+        ):
+            origin, target = source_dir / relative, directory / relative
+            if not origin.is_file():
+                if relative.endswith((".wav", ".rms.json", ".transcript.json")):
+                    raise FileNotFoundError(f"Saved dialogue artifact missing: {origin.name}")
+                continue
+            if origin.suffix == ".wav":
+                try:
+                    os.link(origin, target)
+                    continue
+                except OSError:
+                    pass
+            shutil.copy2(origin, target)
+    state.stages.ingest = previous.stages.ingest.model_copy(deep=True)
+    state.stages.ingest.episodes = manifest
+    state.stages.transcribe = previous.stages.transcribe.model_copy(deep=True)
+    write_json(directory / "state.json", state)
+    logging.getLogger(__name__).info(
+        "Refined edit %s reuses %s subtitle capture", state.job_id, job_id
+    )
+    return state
 
 
 def resume_job(

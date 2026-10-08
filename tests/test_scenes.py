@@ -96,7 +96,7 @@ def transcribed_job(
     state = run_job(
         make_zip([("ep1.mp4", b"one"), ("ep2.mp4", b"two"), ("ep3.mp4", b"three")]),
         stage="ingest",
-        cfg=Settings(detector_threshold=31.0, min_scene_seconds=6.0),
+        cfg=Settings(detector_threshold=31.0, min_scene_seconds=6.0, scene_method="visual"),
     )
     directory = Path("data/jobs") / state.job_id
     for episode in state.stages.ingest.completed:

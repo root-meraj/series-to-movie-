@@ -90,6 +90,7 @@ class SceneRecord(TimedRange):
     characters: list[str] = Field(default_factory=list)
     is_first: bool = False
     is_last: bool = False
+    is_credit: bool = False
     episode_number: int = Field(ge=1)
 
     @model_validator(mode="after")
@@ -106,6 +107,36 @@ class SceneRecord(TimedRange):
 
 class ScenesDoc(RootModel[list[SceneRecord]]):
     """The scenes.json top-level array."""
+
+
+class CreditRange(TimedRange):
+    """A confirmed credit interval and the evidence used to exclude it."""
+
+    evidence: str = Field(min_length=1)
+
+
+class EpisodeCreditsDoc(ContractModel):
+    """The transcripts/E##.credits.json conservative credit-detection checkpoint."""
+
+    episode: EpisodeId
+    duration: float = Field(gt=0)
+    ranges: list[CreditRange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> EpisodeCreditsDoc:
+        """Keep exclusions chronological, disjoint, and within the source episode."""
+        for index, interval in enumerate(self.ranges):
+            if interval.end > self.duration:
+                raise ValueError("Credits must lie within the episode")
+            if index and interval.start < self.ranges[index - 1].end:
+                raise ValueError("Credit ranges must be ordered and non-overlapping")
+        return self
+
+
+class RequiredRange(TimedRange):
+    """A user-selected story moment which must survive selection with its context."""
+
+    episode: EpisodeId
 
 
 class CharacterRecord(ContractModel):
@@ -239,6 +270,20 @@ class LLMSceneRecord(LLMSceneResponse):
     scene_id: SceneId
 
 
+class LLMBatchResponse(ContractModel):
+    """A bounded collection of strict scene judgments from one provider request."""
+
+    scores: list[LLMSceneRecord] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_ids(self) -> LLMBatchResponse:
+        """Never accept duplicate IDs as complete batch coverage."""
+        identifiers = [score.scene_id for score in self.scores]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Batch scores must have unique scene IDs")
+        return self
+
+
 class EpisodeLLMDoc(ContractModel):
     """The transcripts/E##.llm.json checkpoint, saved after each successful model response."""
 
@@ -341,6 +386,14 @@ class JobParams(ContractModel):
     subtitle_language: str = Field(default="en", min_length=2, max_length=3, pattern=r"^[a-z]+$")
     detector_threshold: float = Field(default=27.0, gt=0)
     min_scene_seconds: float = Field(default=5.0, gt=0)
+    scene_method: Literal["visual", "subtitles"] = "visual"
+    scene_block_seconds: float = Field(default=60.0, ge=15, le=180)
+    exclude_credits: bool = False
+    selection_strategy: Literal["density", "story"] = "density"
+    must_keep_ranges: list[RequiredRange] = Field(default_factory=list)
+    llm_batch_size: int = Field(default=1, ge=1, le=12)
+    render_encoder: Literal["auto", "libx264", "h264_nvenc"] = "libx264"
+    parent_job_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     max_characters: int = Field(default=12, gt=0)
     sbert_model: str = Field(default="all-MiniLM-L6-v2", min_length=1)
     min_clip_seconds: float | None = Field(default=None, gt=0)
@@ -412,6 +465,7 @@ class LLMStageState(EpisodeStageState):
     active_episode: EpisodeId | None = None
     summary_done: bool = False
     completed_scenes: list[SceneId] = Field(default_factory=list)
+    scene_count: int = Field(default=0, ge=0)
 
 
 class RenderStageState(StageState):
@@ -425,6 +479,7 @@ class RenderStageState(StageState):
     subtitles_done: bool = False
     video_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     subtitles_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    encoder: Literal["libx264", "h264_nvenc"] | None = None
 
 
 class NLPState(StageState):

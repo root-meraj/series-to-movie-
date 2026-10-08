@@ -445,3 +445,29 @@ character/embedding/LLM checkpoints, `characters.json`, `scenes.json`, `scores.j
 `rolling_summary.json`, `selected.json`, and `state.json`.
 Rendering also populates the clip cache, concat manifest,
 `output/condensed_movie.mp4`, and `output/condensed.srt`.
+
+## Refine a film and keep important moments
+
+New projects use subtitle story blocks by default. Embedded or supplied subtitles
+provide dialogue timestamps; Whisper remains the fallback when subtitles are
+unavailable. The editor groups connected footage into complete sequences, scores
+several blocks per local model request, and keeps silent intervals eligible.
+Confirmed end credits are excluded while uncertain footage and postcredit story
+remain available. Full-video visual scene detection is still an advanced option.
+
+On an existing project's page, open **Refine the story**. Select **Keep a specific
+moment**, choose its episode, and enter the start and end in minutes. Click
+**Create refined film**. This creates a separate edit using saved dialogue and
+media, preserves the earlier movie, and starts fresh story scoring and rendering.
+The runtime card shows the actual film length alongside the requested target.
+
+Defaults in `.env.example`: `SCENE_METHOD=subtitles`, `SCENE_BLOCK_SECONDS=60`,
+`EXCLUDE_CREDITS=true`, `SELECTION_STRATEGY=story`, `LLM_BATCH_SIZE=8`, and
+`RENDER_ENCODER=auto`. GPU rendering is used only after a successful hardware
+probe; otherwise the editor uses CPU encoding. Old saved jobs retain their saved
+behavior; create a refined film to apply these changes.
+
+Subtitle-only scoring cannot recognize every silent visual event. Context
+preservation reduces short-shot loss, and required moments let you guarantee a
+known sequence remains in a particular edit. Selection targets the requested
+length using complete blocks, so the finished duration may be slightly shorter.
