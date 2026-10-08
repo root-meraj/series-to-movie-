@@ -362,6 +362,52 @@ def _story_rank(block: _StoryBlock) -> tuple[float, int, float, str]:
     return (-block.priority, block.scenes[0].episode_number, block.scenes[0].start, block.scene_id)
 
 
+def _story_continuity_rank(
+    block: _StoryBlock, chosen: dict[str, _StoryBlock]
+) -> tuple[float, int, float, str]:
+    connected = any(
+        _adjacent(other.scenes[-1], block.scenes[0])
+        or _adjacent(block.scenes[-1], other.scenes[0])
+        for other in chosen.values()
+    )
+    # A modest preference for connected context cannot overwhelm a much stronger
+    # event, but avoids scattered fragments when model scores are nearly tied.
+    priority = block.priority + (0.1 if connected else 0.0)
+    return (-priority, block.scenes[0].episode_number, block.scenes[0].start, block.scene_id)
+
+
+def _story_group_budgets(
+    groups: dict[str, list[_StoryBlock]], chosen: dict[str, _StoryBlock], target: float
+) -> dict[str, float]:
+    used = {
+        key: math.fsum(block.duration for block in group if block.scene_id in chosen)
+        for key, group in groups.items()
+    }
+    available = {
+        key: math.fsum(block.duration for block in group if block.scene_id not in chosen)
+        for key, group in groups.items()
+    }
+    capacity = math.fsum(available.values())
+    remaining = min(capacity, max(0.0, target - math.fsum(used.values())))
+    return {
+        key: used[key] + (remaining * available[key] / capacity if capacity else 0.0)
+        for key in groups
+    }
+
+
+def _story_sections(blocks: list[_StoryBlock], count: int) -> dict[str, list[_StoryBlock]]:
+    # Use available footage, not wall-clock gaps or excluded credit intervals,
+    # to reserve representation throughout an episode's narrative progression.
+    total = math.fsum(block.duration for block in blocks)
+    groups: dict[str, list[_StoryBlock]] = {}
+    elapsed = 0.0
+    for block in blocks:
+        section = min(count - 1, int((elapsed + block.duration / 2) * count / total))
+        groups.setdefault(str(section), []).append(block)
+        elapsed += block.duration
+    return groups
+
+
 def _story_candidates(
     scenes: list[SceneRecord], scores: list[ScoreRecord], target_seconds: float, cfg: Settings
 ) -> tuple[list[_StoryBlock], set[str], int]:
@@ -519,32 +565,64 @@ def _story_selection(
         return True
 
     episodes = list(dict.fromkeys(block.episode for block in blocks))
+    by_episode = {
+        episode: [block for block in blocks if block.episode == episode] for episode in episodes
+    }
     anchors = forced.copy()
     # Give each episode its strongest remaining event before allocating the rest
     # of the film, preserving the season's setup, developments, and conclusion.
     for episode in episodes:
         if any(block.episode == episode for block in chosen.values()):
             continue
-        for block in sorted((item for item in blocks if item.episode == episode), key=_story_rank):
+        for block in sorted(by_episode[episode], key=_story_rank):
             if add(block):
                 anchors.add(block.scene_id)
                 break
-    source_total = math.fsum(block.duration for block in blocks)
-    shares = {
-        episode: target_seconds
-        * math.fsum(block.duration for block in blocks if block.episode == episode)
-        / source_total
-        for episode in episodes
-    }
+    shares = _story_group_budgets(by_episode, chosen, target_seconds)
+
+    def fill(group: list[_StoryBlock], allowance: float) -> None:
+        pending = [block for block in group if block.scene_id not in chosen]
+        while pending:
+            used = math.fsum(block.duration for block in group if block.scene_id in chosen)
+            fitting = [block for block in pending if used + block.duration <= allowance]
+            if not fitting:
+                return
+            block = min(fitting, key=lambda item: _story_continuity_rank(item, chosen))
+            pending.remove(block)
+            if not add(block):
+                return
+
+    # Finish every episode's reservation before spending leftover time globally.
+    # A global priority pass with generous episode caps can exhaust the target
+    # while later, differently calibrated episodes are still below their share.
+    for episode in episodes:
+        group = by_episode[episode]
+        typical_duration = sorted(block.duration for block in group)[len(group) // 2]
+        # Leave room for a connected pair around each regional event. Shorter
+        # targets automatically use fewer sections; no hard coverage quota can
+        # displace required footage or make a feasible target fail.
+        section_count = min(8, max(1, int(shares[episode] / (2 * typical_duration))))
+        for count in range(section_count, 0, -1):
+            sections = _story_sections(group, count)
+            missing = [
+                min(section, key=lambda item: _story_continuity_rank(item, chosen))
+                for section in sections.values()
+                if not any(block.scene_id in chosen for block in section)
+            ]
+            used = math.fsum(block.duration for block in group if block.scene_id in chosen)
+            if math.fsum([used, *(block.duration for block in missing)]) <= shares[episode]:
+                break
+        else:
+            missing = []
+        for block in missing:
+            if add(block):
+                anchors.add(block.scene_id)
+        section_shares = _story_group_budgets(sections, chosen, shares[episode])
+        for key, section in sections.items():
+            fill(section, section_shares[key])
+        fill(group, shares[episode])
+    fill(blocks, target_seconds)
     ranked = sorted(blocks, key=_story_rank)
-    for block in ranked:
-        episode_total = math.fsum(
-            item.duration for item in chosen.values() if item.episode == block.episode
-        )
-        if episode_total + block.duration <= shares[block.episode] * 1.25:
-            add(block)
-    for block in ranked:
-        add(block)
     remaining = [block for block in ranked if block.scene_id not in chosen]
     _repair_story_budget(chosen, remaining, anchors, target_seconds)
     kept = sorted(

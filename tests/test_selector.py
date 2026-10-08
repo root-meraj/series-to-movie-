@@ -672,6 +672,118 @@ def test_story_episode_coverage_survives_one_episode_dominating_scores() -> None
     assert {clip.episode for clip in result.clips} == {f"E{episode:02d}" for episode in range(1, 9)}
 
 
+@pytest.mark.parametrize("biased_model", [False, True])
+def test_story_reserves_equal_episode_shares_before_global_score_filling(
+    biased_model: bool,
+) -> None:
+    """The final episode receives its fair runtime even with a much lower model score scale."""
+    scenes = [
+        scene for episode in range(1, 9) for scene in _continuous([60] * 16, episode=episode)
+    ]
+    scores = _scores(scenes)
+    for scene, score in zip(scenes, scores, strict=True):
+        score.llm_score = 2 if biased_model and scene.episode == "E08" else 10
+        score.llm_plot_advance = not biased_model or scene.episode != "E08"
+    result = selector.select(scenes, scores, 3840, Settings(selection_strategy="story"))
+    totals = {
+        episode: math.fsum(
+            clip.end - clip.start for clip in result.clips if clip.episode == episode
+        )
+        for episode in {scene.episode for scene in scenes}
+    }
+    assert result.selected_total_seconds == 3840
+    assert all(total == 480 for total in totals.values())
+    assert _ids(result)[0] == scenes[0].scene_id
+    assert _ids(result)[-1] == scenes[-1].scene_id
+
+
+def test_story_longer_final_episode_receives_a_larger_reserved_share() -> None:
+    """A longer finale cannot be starved while shorter, highly scored episodes overrun shares."""
+    scenes = [
+        scene
+        for episode in range(1, 9)
+        for scene in _continuous([60] * (24 if episode == 8 else 12), episode=episode)
+    ]
+    scores = _scores(scenes)
+    for scene, score in zip(scenes, scores, strict=True):
+        score.llm_score = 3 if scene.episode == "E08" else 10
+        score.llm_plot_advance = scene.episode != "E08"
+    result = selector.select(scenes, scores, 3240, Settings(selection_strategy="story"))
+    finale = [clip for clip in result.clips if clip.episode == "E08"]
+    assert result.selected_total_seconds == 3240
+    assert math.fsum(clip.end - clip.start for clip in finale) >= 660
+    assert any(600 <= clip.start < 900 for clip in finale)
+    assert any(clip.start >= 1080 and clip.start < 1380 for clip in finale)
+
+
+def test_story_weak_middle_and_climax_still_receive_chronological_coverage() -> None:
+    """Uniformly weak later batches cannot erase entire narrative sections after a strong start."""
+    scenes = _continuous([60] * 32)
+    scores = _scores(scenes)
+    for index, score in enumerate(scores):
+        score.llm_score = 10 if index < 8 else 2
+        score.llm_plot_advance = index < 8
+    result = selector.select(scenes, scores, 960, Settings(selection_strategy="story"))
+    assert result.selected_total_seconds == 960
+    assert {int(clip.start // 240) for clip in result.clips} == set(range(8))
+    assert sum(960 <= clip.start < 1440 for clip in result.clips) >= 3
+    assert sum(1440 <= clip.start < 1920 for clip in result.clips) >= 3
+    assert max(
+        b.start - a.end for a, b in zip(result.clips, result.clips[1:], strict=False)
+    ) <= 360
+
+
+def test_story_regional_events_prefer_connected_setup_over_scattered_fragments() -> None:
+    """Coverage retains pairs around a regional event rather than isolated evenly spaced cuts."""
+    scenes = _continuous([60] * 32)
+    scores = _scores(scenes)
+    for index, score in enumerate(scores):
+        score.llm_score = 9 if index % 4 == 1 else 7
+        score.llm_plot_advance = index % 4 == 1
+    result = selector.select(scenes, scores, 960, Settings(selection_strategy="story"))
+    assert result.selected_total_seconds == 960
+    kept = set(_ids(result))
+    for start in range(4, 28, 4):
+        assert scenes[start].scene_id in kept
+        assert scenes[start + 1].scene_id in kept
+
+
+def test_story_required_footage_can_exceed_its_episode_share_without_losing_other_episode() -> None:
+    """User inclusions reserve their whole ranges before distributing the remaining runtime."""
+    scenes = [
+        scene for episode in range(1, 3) for scene in _continuous([60] * 24, episode=episode)
+    ]
+    scores = _scores(scenes)
+    for scene, score in zip(scenes, scores, strict=True):
+        score.llm_score = 10 if scene.episode == "E01" else 2
+        score.llm_plot_advance = scene.episode == "E01"
+    result = selector.select(
+        scenes,
+        scores,
+        960,
+        Settings(
+            selection_strategy="story",
+            must_keep_ranges=[RequiredRange(episode="E01", start=480, end=900)],
+        ),
+    )
+    assert result.selected_total_seconds == 960
+    kept = set(_ids(result))
+    assert {scene.scene_id for scene in scenes[8:15]}.issubset(kept)
+    assert sum(clip.episode == "E02" for clip in result.clips) >= 4
+    assert scenes[0].scene_id in kept
+    assert scenes[-1].scene_id in kept
+
+
+def test_story_tiny_target_reduces_coverage_to_feasible_bookends() -> None:
+    """An edit too short to represent every episode remains valid with its required season ends."""
+    scenes = [
+        scene for episode in range(1, 9) for scene in _continuous([60] * 12, episode=episode)
+    ]
+    result = selector.select(scenes, _scores(scenes), 120, Settings(selection_strategy="story"))
+    assert result.selected_total_seconds == 120
+    assert _ids(result) == [scenes[0].scene_id, scenes[-1].scene_id]
+
+
 def test_story_similar_dialogue_embeddings_do_not_remove_distinct_plot_events() -> None:
     """Semantic similarity describes related conversations rather than actual repeated footage."""
     scenes = [_scene(index, 30, f"Different plot dialogue {index}.") for index in range(1, 6)]

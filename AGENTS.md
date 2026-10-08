@@ -860,6 +860,9 @@ Subtitle windows use cue boundaries and gaps, retaining full silent/action
 coverage; they skip full-video camera-cut detection. Story selection groups short
 adjacent shots, preserves required ranges plus season story bookends, considers
 causal setup/context and episode coverage, and fills the budget with whole blocks.
+Reserve proportional episode budgets before global filling; within each episode,
+adapt chronological section coverage to the available budget and prefer adjacent
+context. Required ranges retain priority when these reservations must shrink.
 Do not drop related conversations merely for semantic similarity. Count selected
 editing blocks in `stats.scenes_kept`; `selected.json` otherwise keeps its schema.
 

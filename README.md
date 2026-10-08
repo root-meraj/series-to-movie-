@@ -450,10 +450,16 @@ Rendering also populates the clip cache, concat manifest,
 
 New projects use subtitle story blocks by default. Embedded or supplied subtitles
 provide dialogue timestamps; Whisper remains the fallback when subtitles are
-unavailable. The editor groups connected footage into complete sequences, scores
+unavailable. The editor groups connected footage into story blocks, scores
 several blocks per local model request, and keeps silent intervals eligible.
 Confirmed end credits are excluded while uncertain footage and postcredit story
 remain available. Full-video visual scene detection is still an advanced option.
+
+Story selection reserves time for each episode before spending the remaining
+budget across the season. Within an episode, it keeps coverage across chronological
+sections and prefers neighboring context, preventing earlier episodes or similarly
+rated conversations from crowding out the middle and ending. Smaller targets use
+fewer sections when their budget cannot fit broader coverage.
 
 On an existing project's page, open **Refine the story**. Select **Keep a specific
 moment**, choose its episode, and enter the start and end in minutes. Click
