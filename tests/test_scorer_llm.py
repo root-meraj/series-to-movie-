@@ -64,12 +64,6 @@ def _script() -> list[str]:
     ]
 
 
-@pytest.fixture(autouse=True)
-def legacy_single_scene_requests(monkeypatch: pytest.MonkeyPatch, isolate_settings: None) -> None:
-    """Keep the original single-scene contract regression cases in their saved legacy mode."""
-    monkeypatch.setenv("LLM_BATCH_SIZE", "1")
-
-
 def test_summary_precedes_scores_and_context_flows_between_episodes() -> None:
     """Unsorted scenes are scored chronologically after each episode's summary update."""
     provider = llm.MockProvider(_script())
@@ -80,7 +74,7 @@ def test_summary_precedes_scores_and_context_flows_between_episodes() -> None:
         [_scene(2, 2), _scene(2), _scene(1, 2), _scene(1)],
         characters,
         "Initial context.",
-        Settings(llm_provider="mock", target_minutes=17, season_number=3),
+        Settings(llm_provider="mock", target_minutes=17, season_number=3, llm_batch_size=1),
         provider=provider,
         show="Test Show",
     )
@@ -106,7 +100,9 @@ def test_plain_and_fenced_json_are_accepted(fence: str) -> None:
     """Common Markdown wrapping does not break otherwise strict JSON validation."""
     response = fence.format(_score()) if fence else _score()
     provider = llm.MockProvider([json.dumps({"summary": "Context."}), response])
-    scores, _ = llm.score_scenes([_scene(1)], CharacterTable(), "", Settings(), provider=provider)
+    scores, _ = llm.score_scenes(
+        [_scene(1)], CharacterTable(), "", Settings(llm_batch_size=1), provider=provider
+    )
     assert scores[0].llm_score == 8 and len(provider.calls) == 2
 
 
@@ -129,7 +125,9 @@ def test_plain_and_fenced_json_are_accepted(fence: str) -> None:
 def test_invalid_scene_response_retries_with_strict_validation(bad: str) -> None:
     """Invalid types, ranges, fields, and reason lengths require a new model response."""
     provider = llm.MockProvider([json.dumps({"summary": "Context."}), bad, _score()])
-    scores, _ = llm.score_scenes([_scene(1)], CharacterTable(), "", Settings(), provider=provider)
+    scores, _ = llm.score_scenes(
+        [_scene(1)], CharacterTable(), "", Settings(llm_batch_size=1), provider=provider
+    )
     assert scores[0].llm_score == 8 and len(provider.calls) == 3
     assert "Invalid response" in provider.calls[-1][1]
 
@@ -405,8 +403,7 @@ def test_qwen3_long_episode_payload_keeps_all_dialogue_and_retries_invalid_scene
         assert payload["stream"] is False
         system, user = payload["messages"]
         expected_type = (
-            SummaryResponse
-            if user["content"].startswith("Update rolling summary")
+            SummaryResponse if user["content"].startswith("Update rolling summary")
             else LLMSceneResponse
         )
         assert payload["format"] == expected_type.model_json_schema()
@@ -418,7 +415,7 @@ def test_qwen3_long_episode_payload_keeps_all_dialogue_and_retries_invalid_scene
         [scene],
         CharacterTable(),
         "Earlier context.",
-        Settings(llm_provider="ollama", llm_model="qwen3:1.7b"),
+        Settings(llm_provider="ollama", llm_model="qwen3:1.7b", llm_batch_size=1),
     )
     assert updated_summary == summary and scores[0].llm_score == 8
     assert len(mock.calls) == 3
@@ -504,7 +501,9 @@ def baseline_job(
         make_zip([("ep1.mp4", b"one"), ("ep2.mp4", b"two")]),
         stage="ingest",
         name="Test Show",
-        cfg=Settings(llm_provider="mock", llm_model="saved-model", season_number=2),
+        cfg=Settings(
+            llm_provider="mock", llm_model="saved-model", season_number=2, llm_batch_size=1
+        ),
     )
     for stage in (
         state.stages.transcribe,
