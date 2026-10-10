@@ -6,12 +6,14 @@ from collections.abc import Callable, Iterator
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
+from urllib.request import urlopen
 from zipfile import ZipFile, ZipInfo
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from sts.app import ui
+from sts.app.media_server import LocalMediaServer, start_media_server
 from sts.app.runner import JobRunner
 from sts.config import Settings
 from sts.schemas import (
@@ -119,10 +121,20 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Controll
     controlled = ControlledRunner(tmp_path / "jobs")
     monkeypatch.setattr(ui, "_jobs_dir", lambda: controlled.jobs_dir)
     monkeypatch.setattr(ui, "_get_runner", lambda jobs_dir: controlled)
+    media_servers: list[LocalMediaServer] = []
+
+    def media_server(jobs_dir: str) -> LocalMediaServer:
+        if not media_servers:
+            media_servers.append(start_media_server(Path(jobs_dir)))
+        return media_servers[0]
+
+    monkeypatch.setattr(ui, "_get_media_server", media_server)
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("TRANSCRIPT_SOURCE", "auto")
     yield controlled
     controlled.shutdown()
+    for server in media_servers:
+        server.close()
 
 
 def _zip_bytes() -> bytes:
@@ -615,21 +627,10 @@ def test_failure_is_visible_and_resume_keeps_same_job(runner: ControlledRunner) 
 def test_completed_project_has_preview_and_both_downloads_without_restarting_work(
     runner: ControlledRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Finished artifacts populate preview/download widgets and stay idle when clicked."""
-    registered: dict[str, tuple[Callable[[], bytes], str, str]] = {}
-    original = ui.st.download_button
+    """Preview and downloads use streaming URLs without buffering movie bytes or rerunning work."""
 
-    def download(
-        label: str,
-        *,
-        data: Callable[[], bytes],
-        file_name: str,
-        mime: str,
-        key: str,
-        **kwargs: Any,
-    ) -> bool:
-        registered[key] = (data, file_name, mime)
-        return original(label, data=data, file_name=file_name, mime=mime, key=key, **kwargs)
+    def download(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Exports must not register files in Streamlit's memory storage")
 
     monkeypatch.setattr(ui.st, "download_button", download)
     app = _create(_app())
@@ -637,24 +638,52 @@ def test_completed_project_has_preview_and_both_downloads_without_restarting_wor
     directory = _save_finished(runner, state)
     app.run()
     assert not app.exception
-    assert app.get("video")
-    movie = app.download_button(key=f"movie_{state.job_id}")
-    subtitles = app.download_button(key=f"subtitles_{state.job_id}")
-    assert not movie.disabled and not subtitles.disabled
-    assert movie.proto.deferred_file_id and subtitles.proto.deferred_file_id
+    video = app.get("video")[0]
+    assert video.proto.url.startswith("http://127.0.0.1:")
+    assert video.proto.url.endswith("/condensed_movie.mp4")
+    links = {item.proto.label: item for item in app.get("link_button")}
+    movie = links["Download film"]
+    subtitles = links["Subtitles · SRT"]
+    assert not movie.proto.disabled and not subtitles.proto.disabled
     assert movie.proto.ignore_rerun and subtitles.proto.ignore_rerun
-    film_callback, film_name, film_mime = registered[f"movie_{state.job_id}"]
-    subtitle_callback, subtitle_name, subtitle_mime = registered[f"subtitles_{state.job_id}"]
-    assert film_callback() == (directory / "output/condensed_movie.mp4").read_bytes()
-    assert subtitle_callback() == (directory / "output/condensed.srt").read_bytes()
-    assert (film_name, film_mime) == ("condensed_movie.mp4", "video/mp4")
-    assert (subtitle_name, subtitle_mime) == ("condensed.srt", "application/x-subrip")
     before = (directory / "state.json").read_bytes()
-    movie.click().run()
-    assert not app.exception
-    app.download_button(key=f"subtitles_{state.job_id}").click().run()
+    for link, filename, mime in (
+        (movie, "condensed_movie.mp4", "video/mp4"),
+        (subtitles, "condensed.srt", "application/x-subrip"),
+    ):
+        with urlopen(link.proto.url, timeout=5) as response:
+            assert response.read() == (directory / "output" / filename).read_bytes()
+            assert response.headers["Content-Type"].split(";")[0] == mime
+            assert filename in response.headers["Content-Disposition"]
+            assert response.headers["Content-Disposition"].startswith("attachment")
+    app.run()
     assert not app.exception
     assert runner.started == [state.job_id]
+    assert (directory / "state.json").read_bytes() == before
+
+
+def test_repeated_preview_renders_do_not_read_media_into_streamlit(
+    runner: ControlledRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Widget reruns leave local movie payloads on disk and keep the streaming URL stable."""
+    from streamlit.runtime.memory_media_file_storage import MemoryMediaFileStorage
+
+    app = _create(_app())
+    directory = _save_finished(runner, runner.created[0])
+    before = (directory / "state.json").read_bytes()
+
+    def read_file(self: MemoryMediaFileStorage, filename: str) -> bytes:
+        raise AssertionError("Rendering must not read local media into Streamlit")
+
+    monkeypatch.setattr(MemoryMediaFileStorage, "_read_file", read_file)
+    urls: list[str] = []
+    for _ in range(3):
+        app.run()
+        assert not app.exception
+        urls.append(app.get("video")[0].proto.url)
+    assert len(set(urls)) == 1
+    assert urls[0].startswith("http://127.0.0.1:")
+    assert runner.started == [runner.created[0].job_id]
     assert (directory / "state.json").read_bytes() == before
 
 

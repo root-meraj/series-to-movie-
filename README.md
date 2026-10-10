@@ -141,8 +141,11 @@ the unfinished unit starts again. Files are retained.
 Keep the Streamlit server running until processing completes. Avoid running a CLI
 writer against the same active job.
 
-Film downloads are prepared on click, so progress refreshes do not repeatedly load
-the whole movie into memory. The provided configuration binds to loopback for a
+The film player and both download buttons stream files from disk in bounded chunks.
+Opening a project does not load the whole movie into the website's memory; byte-range
+requests let the player seek without transferring the full film. A shared local media
+server serves only the movie and subtitle outputs through private, temporary URLs.
+The provided configuration binds to loopback for a
 local workspace. This phase does not add multi-user authentication or deployment.
 
 ## Process a season into a movie
@@ -411,7 +414,7 @@ with deterministic model/media doubles and MockProvider. They cover each explici
 stop, default full execution, saved settings, interrupted units, repeated failures
 before stage error handlers, and completed resume after deleting the source ZIP.
 Streamlit AppTest cases exercise native uploads, form settings, saved-project
-navigation, progress refresh, failure/reconnect/resume, preview, and deferred
+navigation, progress refresh, failure/reconnect/resume, preview, and streaming
 downloads without models or external API requests. Runner tests cover durable
 uploads, atomic publication, duplicate launches, and worker recovery. Resource-cache
 tests verify lazy loading, cache identity, replacement, and constructor failures.

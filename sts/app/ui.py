@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import logging
 from decimal import ROUND_HALF_UP, Decimal
-from functools import partial
 from pathlib import Path
 from time import time
 from types import MappingProxyType
@@ -14,6 +13,7 @@ from zipfile import BadZipFile
 import streamlit as st
 from rich.logging import RichHandler
 
+from sts.app.media_server import LocalMediaServer, start_media_server
 from sts.app.model_cache import install_model_cache
 from sts.app.runner import JobRunner
 from sts.config import Settings
@@ -187,6 +187,12 @@ def _jobs_dir() -> Path:
 def _get_runner(jobs_dir: str) -> JobRunner:
     install_model_cache()
     return JobRunner(Path(jobs_dir))
+
+
+@st.cache_resource(show_spinner=False)
+def _get_media_server(jobs_dir: str) -> LocalMediaServer:
+    """Share a disk-streaming server without caching movie contents in Streamlit."""
+    return start_media_server(Path(jobs_dir))
 
 
 def _html(content: str) -> None:
@@ -584,10 +590,6 @@ def _selection(directory: Path) -> SelectionDoc | None:
         return None
 
 
-def _read_download(path: Path) -> bytes:
-    return path.read_bytes()
-
-
 def _watch_worker(runner: JobRunner) -> None:
     job_id = runner.active_job_id
     if job_id is None:
@@ -625,7 +627,15 @@ def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -
     ready = state.stages.render.status == "done"
     _html('<div class="section-head"><h2>Your film</h2><small>PREVIEW & EXPORT</small></div>')
     if ready and movie.is_file() and subtitles.is_file():
-        st.video(str(movie))
+        try:
+            media = _get_media_server(str(directory.parent))
+            preview_url = media.url(state.job_id, movie.name)
+            movie_url = media.url(state.job_id, movie.name, download=True)
+            subtitle_url = media.url(state.job_id, subtitles.name, download=True)
+        except (OSError, ValueError) as exc:
+            st.error(f"Couldn't open the film player: {exc}")
+            return
+        st.video(preview_url)
         duration = (
             selection.selected_total_seconds / 60 if selection else state.params.target_seconds / 60
         )
@@ -635,11 +645,9 @@ def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -
         )
         movie_column, subtitle_column = st.columns([1.1, 1])
         with movie_column:
-            st.download_button(
+            st.link_button(
                 "Download film",
-                data=partial(_read_download, movie),
-                file_name="condensed_movie.mp4",
-                mime="video/mp4",
+                url=movie_url,
                 key=f"movie_{state.job_id}",
                 type="primary",
                 icon=":material/download:",
@@ -647,11 +655,9 @@ def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -
                 on_click="ignore",
             )
         with subtitle_column:
-            st.download_button(
+            st.link_button(
                 "Subtitles · SRT",
-                data=partial(_read_download, subtitles),
-                file_name="condensed.srt",
-                mime="application/x-subrip",
+                url=subtitle_url,
                 key=f"subtitles_{state.job_id}",
                 icon=":material/subtitles:",
                 width="stretch",

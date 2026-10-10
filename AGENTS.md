@@ -478,8 +478,13 @@ Phase 10 UI clarifications (existing JSON keys are unchanged):
   model name, and spaCy has one resource. Importing the module does not install
   adapters or load weights; the cached UI runner installs them once. CLI processes
   retain their existing singleton behavior. Unit-test guards cover these adapters.
-- Completed projects show st.video and deferred st.download_button exports for
-  MP4 and SRT, without restarting processing on download. Missing artifacts show
+- Completed projects show st.video with a loopback streaming URL and st.link_button
+  exports for MP4 and SRT, without restarting processing on download. The cached
+  `sts/app/media_server.py` server reads bounded chunks from disk, supports byte
+  ranges and HEAD for playback/seeking, and sends attachment headers on downloads.
+  Only the two named outputs within jobs_dir are accessible through unguessable
+  per-server URLs; no movie payload is registered in Streamlit's memory storage.
+  Server startup and page reruns never read whole media files. Missing artifacts show
   a recovery message. Empty transcripts produce a clearly explained empty SRT.
   Names used in custom HTML are escaped, and errors use native text widgets.
 - UI AppTest cases, runner tests, cache tests, and browser checks verify the
