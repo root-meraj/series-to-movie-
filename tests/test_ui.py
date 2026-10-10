@@ -221,6 +221,26 @@ def test_empty_app_requires_an_upload_and_shows_creation_widgets(runner: Control
     assert "local" in explanations.casefold()
 
 
+def test_main_project_picker_opens_saved_edit_and_returns_to_creation(
+    runner: ControlledRunner,
+) -> None:
+    """Phone navigation reaches saved projects without needing the collapsed sidebar."""
+    state = runner.create(BytesIO(_zip_bytes()), 2, name="A saved season")
+    _save_finished(runner, state)
+    app = _app()
+    app.selectbox(key="project_picker").select(state.job_id).run()
+    assert not app.exception
+    assert app.session_state.active_job == state.job_id
+    assert app.get("video")
+    assert runner.started == []
+    app.button(key="new_film").click().run()
+    assert not app.exception
+    assert app.session_state.active_job is None
+    assert app.selectbox(key="project_picker").value is None
+    assert app.button(key="create_project").disabled
+    assert runner.started == []
+
+
 def test_local_zip_path_with_copy_as_path_quotes_creates_one_job_without_upload_or_copy(
     runner: ControlledRunner, tmp_path: Path
 ) -> None:

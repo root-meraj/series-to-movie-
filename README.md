@@ -7,6 +7,9 @@ The source of truth for contracts and phase boundaries is [AGENTS.md](AGENTS.md)
 
 Phase 10 adds a Streamlit editing workspace with ZIP upload, background processing,
 live stage progress, saved projects, movie preview, and film/subtitle downloads.
+Its mobile maintenance adds a static Vercel frontend in `web/` and an authenticated
+persistent processing API. The player appears first in completed projects, and a
+project picker stays available when the phone sidebar is collapsed.
 The CLI still runs the complete pipeline, with explicit stage stops available.
 Evaluation scripts remain for Phase 11.
 
@@ -146,7 +149,38 @@ Opening a project does not load the whole movie into the website's memory; byte-
 requests let the player seek without transferring the full film. A shared local media
 server serves only the movie and subtitle outputs through private, temporary URLs.
 The provided configuration binds to loopback for a
-local workspace. This phase does not add multi-user authentication or deployment.
+local workspace. The separate hosted frontend uses the processing API described below.
+
+## Mobile website on Vercel
+
+Import this GitHub repository into Vercel and set **Root Directory** to **`web`**.
+Choose **Other** as the framework; no build command is needed. The frontend is plain
+HTML, CSS, and JavaScript and works on phones. See [web/README.md](web/README.md)
+for the exact frontend configuration.
+
+Run the video pipeline on a persistent server with FFmpeg and the Python dependencies.
+Vercel serves the interface; ZIP uploads and movie streams connect directly to the
+processing server. Long video processing needs durable storage and a background
+worker beyond [Vercel function request and duration limits](https://vercel.com/docs/functions/limitations).
+
+Copy `.env.example` to `.env` on the processing server and set a private
+`STS_WEB_ACCESS_TOKEN` of at least 32 random characters, the exact frontend origin in
+`STS_WEB_ALLOWED_ORIGINS`, and the backend HTTPS origin in `STS_WEB_PUBLIC_URL`.
+Keep all model/provider credentials on this server. Start it with:
+
+```powershell
+.\.venv\Scripts\python.exe -m sts.app.web_api
+```
+
+For a local preview, serve `web/` at `http://127.0.0.1:3000` and keep the API at
+`http://127.0.0.1:8765`. Enter that backend URL and your workspace access key in the
+connection screen. The key stays in page memory and must be entered again after a
+reload. A public frontend does not grant access to the processing workspace. The
+API provides one shared authorized workspace, not separate user accounts.
+
+Deploy the backend with durable job storage and HTTPS before using the Vercel site
+from a phone. A laptop running only on `127.0.0.1` cannot be reached from a public
+Vercel page. [deploy/README.md](deploy/README.md) covers a persistent backend setup.
 
 ## Process a season into a movie
 

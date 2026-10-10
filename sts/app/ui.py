@@ -22,136 +22,264 @@ from sts.schemas import JobState, RequiredRange, SelectionDoc, StageState, read_
 
 _STYLES = """
 <style>
-:root { --gold:#d8af72; --muted:#95a0b2; --line:#283140; }
-.stApp { background:#0b0f16; color:#f2f0eb; }
-.stMainBlockContainer { max-width:1440px; padding:2.3rem 3.4rem 3rem; }
+:root { --gold:#dfb575; --cream:#f3eee5; --muted:#a6b2c1; --line:#2b3644;
+ --ink:#0a1018; --panel:#111b27; --field:#0d1520; }
+.stApp { background:var(--ink); color:var(--cream); font-size:16px; }
+.stMainBlockContainer { max-width:1360px; padding:2.4rem 3.25rem 3rem; }
+[data-testid="stMain"] { min-width:0; }
 [data-testid="stHeader"] { background:transparent; }
 [data-testid="stAppDeployButton"] { display:none; }
-[data-testid="stSidebar"] { background:#101620; border-right:1px solid #26303e; }
-[data-testid="stSidebarContent"] { padding:1.4rem 1.15rem; }
+[data-testid="stMarkdownContainer"] p { line-height:1.65; }
+[data-testid="stCaptionContainer"] { color:var(--muted); font-size:14px; line-height:1.6; }
+[data-testid="stSidebar"] { background:#0f1722; border-right:1px solid var(--line); }
+[data-testid="stSidebarContent"] { padding:1.4rem 1.1rem; }
 [data-testid="stSidebar"] .stButton button { text-align:left; justify-content:flex-start; }
-[data-testid="stSidebar"] .stButton button p { font-size:.84rem; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap:.55rem; }
-.brand { display:flex; gap:12px; align-items:center; padding:8px 0 36px; }
-.brand-mark { border:1px solid #8e744d; color:#e3c28e; width:40px; height:44px;
- display:grid; place-items:center; font-family:Georgia,serif; font-size:25px;
- border-radius:9px; background:linear-gradient(135deg,#2d291f,#121923); }
-.brand-name { font-size:15px; letter-spacing:-.3px; font-weight:650; }
-.brand-sub { font-size:9px; color:#a8b0bf; letter-spacing:2.5px; margin-top:4px; }
-.eyebrow { color:#c5a878; font-size:10px; font-weight:600; letter-spacing:2px;
- text-transform:uppercase; margin-bottom:12px; }
-.sidebar-label { color:#8190a5; font-size:10px; letter-spacing:1.8px; margin:28px 0 10px; }
-.sidebar-foot { margin-top:32px; border-top:1px solid #283140; padding-top:20px;
- font-size:12px; color:#99a4b5; line-height:1.8; }
-.sidebar-foot b { color:#d3d9e2; font-weight:500; }
-.topline { display:flex; justify-content:space-between; gap:15px; align-items:center;
- margin-bottom:34px; font-size:11px; color:#a3adbd; letter-spacing:1.2px; }
-.topline span { color:#e3e6eb; }
-.local-pill { border:1px solid #2c3c37; border-radius:30px; padding:7px 12px;
- color:#acc5b7; font-size:9px; letter-spacing:1.4px; white-space:nowrap; }
-.local-pill::before { content:'●'; color:#9fbba4; margin-right:7px; }
-.hero { display:grid; grid-template-columns:1.15fr 1fr; gap:40px; align-items:center;
- padding:0 0 32px; }
-.hero h1 { font-family:Georgia,'Times New Roman',serif; font-size:clamp(38px,4vw,60px);
- font-weight:400; line-height:1.12; letter-spacing:-1.9px; margin:0 0 19px; padding:0; }
-.hero h1 em { color:#ddba87; font-weight:400; }
-.hero p { color:#a7b0be; font-size:14px; line-height:1.9; max-width:455px; margin:0; }
-.film-art { height:220px; position:relative; border:1px solid #2d3543; border-radius:14px;
- overflow:hidden; background:radial-gradient(ellipse at 70% 0%,#5b47324d,transparent 65%),#111822; }
-.art-label { position:absolute; top:17px; left:21px; color:#aa987e; font-size:8px;
- letter-spacing:2.2px; }
-.film-stack { position:absolute; top:52px; left:26px; right:26px; display:flex; gap:9px;
+[data-testid="stSidebar"] .stButton button p { font-size:14px; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap:.6rem; }
+.brand { display:flex; gap:12px; align-items:center; padding:8px 0 28px; }
+.brand-mark { border:1px solid #89734e; color:#e8c58f; width:42px; height:46px;
+ display:grid; place-items:center; font-family:Georgia,serif; font-size:27px;
+ border-radius:11px; flex-shrink:0; background:#1d2329; }
+.brand-name { font-size:16px; letter-spacing:-.3px; font-weight:650; color:var(--cream); }
+.brand-sub { font-size:10px; color:#b2bbca; letter-spacing:2px; margin-top:5px; }
+.sidebar-label { color:#a1aec0; font-size:11px; letter-spacing:1.5px; margin:24px 0 10px; }
+.sidebar-foot { margin-top:28px; border-top:1px solid var(--line); padding-top:20px;
+ font-size:13px; color:var(--muted); line-height:1.8; }
+.sidebar-foot b { color:var(--cream); font-weight:500; }
+.workspace-top { display:flex; justify-content:space-between; align-items:center;
+ gap:20px; padding:0 0 20px; margin-bottom:4px; border-bottom:1px solid var(--line); }
+.workspace-brand { font-family:Georgia,'Times New Roman',serif; color:var(--cream);
+ font-size:23px; letter-spacing:-.6px; line-height:1.25; }
+.workspace-tagline { color:var(--muted); font-size:11px; letter-spacing:1.6px;
+ text-transform:uppercase; margin-top:6px; }
+.st-key-workspace_nav { padding:16px 0 20px; border-bottom:1px solid var(--line);
+ margin-bottom:14px; }
+.st-key-workspace_nav [data-testid="stHorizontalBlock"] { align-items:flex-end; }
+.st-key-workspace_nav [data-testid="stColumn"] { min-width:0; }
+.st-key-phone_access { margin:0 0 10px; }
+.st-key-phone_access [data-testid="stExpander"] details { background:#0f1924; }
+.phone-banner { display:flex; align-items:flex-start; gap:12px; padding:13px 15px;
+ border:1px solid #405440; border-radius:11px; background:#19291f55;
+ font-size:14px; line-height:1.6; color:#d3e4d5; }
+.phone-banner p { margin:0; }
+.phone-banner a { color:#e9c58e; overflow-wrap:anywhere; }
+.topline { display:flex; justify-content:space-between; gap:16px; align-items:center;
+ margin-bottom:26px; font-size:12px; color:var(--muted); letter-spacing:1px; }
+.topline span { color:var(--cream); }
+.local-pill { border:1px solid #344739; border-radius:30px; padding:8px 12px;
+ color:#c0d5c6; font-size:10px; letter-spacing:1.2px; white-space:nowrap; }
+.local-pill::before { content:'●'; color:#b3cfb3; margin-right:7px; }
+.eyebrow, .step-kicker { color:#e1bc83; font-size:11px; font-weight:600; letter-spacing:1.8px;
+ text-transform:uppercase; margin-bottom:12px; line-height:1.5; }
+.hero { display:grid; grid-template-columns:1.25fr .9fr; gap:44px; align-items:center;
+ padding:12px 0 30px; }
+.hero > div { min-width:0; }
+.hero h1 { font-family:Georgia,'Times New Roman',serif; font-size:clamp(40px,4.1vw,56px);
+ font-weight:400; line-height:1.1; letter-spacing:-1.8px; margin:0 0 19px; padding:0;
+ color:var(--cream); }
+.hero h1 em { color:#e0bb82; font-weight:400; }
+.hero p { color:#b2bdcc; font-size:16px; line-height:1.75; max-width:500px; margin:0; }
+.film-art { height:234px; position:relative; border:1px solid #394248; border-radius:18px;
+ overflow:hidden; background:radial-gradient(ellipse at 75% 0%,#54433055,transparent 75%),
+ linear-gradient(145deg,#17212b,#0d1520); }
+.art-label { position:absolute; top:20px; left:24px; color:#c8b18d; font-size:10px;
+ letter-spacing:1.7px; }
+.film-stack { position:absolute; top:62px; left:25px; right:25px; display:flex; gap:10px;
  transform:rotate(-5deg); }
-.film-frame { height:93px; flex:1; border:1px solid #806f5d; border-radius:4px;
- background:linear-gradient(135deg,#544b3d,#182633 55%,#0a121b); position:relative;
- box-shadow:0 16px 22px #0007; }
-.film-frame:nth-child(2) { background:linear-gradient(145deg,#232a39,#8b6843 65%,#171a22); }
-.film-frame:nth-child(3) { background:linear-gradient(135deg,#63716a,#253442 55%,#131820); }
-.film-frame::before { content:''; position:absolute; inset:9px 6px;
- border-top:1px solid #bfa78370; border-bottom:1px solid #bfa78370; }
-.film-frame i { position:absolute; bottom:19px; left:12px; color:#d8cbb9;
- font-family:Georgia,serif; font-size:22px; font-style:normal; }
-.art-timeline { position:absolute; left:27px; right:27px; bottom:27px;
+.film-frame { height:100px; flex:1; min-width:0; border:1px solid #84735e; border-radius:5px;
+ background:linear-gradient(135deg,#665844,#243440 58%,#131b23); position:relative;
+ box-shadow:0 12px 18px #0005; }
+.film-frame:nth-child(2) { background:linear-gradient(145deg,#29313d,#9b794d 65%,#24252b); }
+.film-frame:nth-child(3) { background:linear-gradient(135deg,#718078,#344552 55%,#18212a); }
+.film-frame::before { content:''; position:absolute; inset:9px 7px;
+ border-top:1px solid #ddc69d80; border-bottom:1px solid #ddc69d80; }
+.film-frame i { position:absolute; bottom:19px; left:12px; color:#eee2cc;
+ font-family:Georgia,serif; font-size:25px; font-style:normal; }
+.art-timeline { position:absolute; left:25px; right:25px; bottom:27px;
  display:flex; align-items:center; gap:8px; }
-.art-timeline span { height:4px; flex:1; border-radius:3px; background:#b3946570; }
-.art-timeline span:nth-child(2) { background:#dec08c; flex:2; }
-.art-timeline b { color:#d1c2ab; font-size:9px; font-weight:400; letter-spacing:1px;
+.art-timeline span { height:5px; flex:1; border-radius:3px; background:#b3946570; }
+.art-timeline span:nth-child(2) { background:#e4c58e; flex:2; }
+.art-timeline b { color:#d8c7a8; font-size:10px; font-weight:500; letter-spacing:1px;
  margin-left:6px; white-space:nowrap; }
-.divider { height:1px; background:linear-gradient(90deg,#434033,#26313e); margin:4px 0 26px; }
+.step-strip { display:flex; gap:24px; flex-wrap:wrap; padding:18px 0 25px; }
+.step-item { display:flex; gap:10px; align-items:center; color:#c0c9d5; font-size:14px; }
+.step-item b { display:grid; place-items:center; flex-shrink:0; width:28px; height:28px;
+ border:1px solid #6d5c41; border-radius:50%; color:#e2bf89; font-size:12px; font-weight:500; }
+.divider { height:1px; background:var(--line); margin:4px 0 24px; }
 .section-head { display:flex; align-items:center; justify-content:space-between; gap:16px;
  margin:0 0 18px; }
-.section-head h2 { color:#eeeae3; font-size:20px; font-weight:500; letter-spacing:-.4px;
- margin:0; padding:0; }
-.section-head small { color:#8b98ab; font-size:11px; }
-[data-testid="stVerticalBlockBorderWrapper"] > div { border-color:#293343!important;
- background:#121923; border-radius:14px!important; }
+.section-head h2 { color:var(--cream); font-size:22px; font-weight:550; letter-spacing:-.6px;
+ margin:0; padding:0; line-height:1.3; }
+.section-head small { color:var(--muted); font-size:11px; letter-spacing:.5px; }
+[data-testid="stVerticalBlockBorderWrapper"] > div { border-color:var(--line)!important;
+ background:var(--panel); border-radius:16px!important; }
 .st-key-upload_panel, .st-key-edit_panel, .st-key-stage_panel, .st-key-export_panel {
- padding:8px 10px; }
-.panel-title { font-size:15px; font-weight:550; color:#e9e7e1; margin:2px 0 7px; }
-.panel-note { color:#99a5b6; font-size:12px; line-height:1.7; margin-bottom:19px; }
-[data-testid="stFileUploaderDropzone"] { background:#0e141e; border:1px dashed #5b5549;
- border-radius:10px; min-height:146px; padding:24px 16px; }
-[data-testid="stFileUploaderDropzone"] svg { color:#c5a878; }
-[data-testid="stFileUploaderDropzone"] small { color:#9eabbb; }
-[data-testid="stWidgetLabel"] p { font-size:12px; color:#d4d8df; }
-[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input { background:#0d141e; }
-.stButton button, .stDownloadButton button { min-height:43px; border-radius:8px;
- font-size:12px; font-weight:500; transition:border-color .15s,background .15s; }
-.stButton button:focus-visible, .stDownloadButton button:focus-visible {
- outline:2px solid #e3c28e; outline-offset:3px; }
-.stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
- background:#d8af72; color:#15181b; border:1px solid #d8af72; }
+ padding:10px 12px; }
+.panel-title { font-size:20px; font-weight:550; color:var(--cream); letter-spacing:-.4px;
+ margin:2px 0 8px; line-height:1.4; }
+.panel-note { color:#b2bdcc; font-size:15px; line-height:1.7; margin-bottom:22px; }
+[data-testid="stFileUploaderDropzone"] { background:var(--field); border:1px dashed #786749;
+ border-radius:12px; min-height:160px; padding:24px 18px; }
+[data-testid="stFileUploaderDropzone"] svg { color:#e1bc83; }
+[data-testid="stFileUploaderDropzone"] small { color:#adbac9; font-size:13px; }
+[data-testid="stWidgetLabel"] p { font-size:14px; color:#dee3e9; font-weight:500; }
+[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea { background:var(--field); font-size:16px;
+ min-height:48px; line-height:1.5; }
+[data-testid="stSelectbox"] [data-baseweb="select"] > div { min-height:48px; font-size:16px; }
+[data-testid="stRadio"] label, [data-testid="stCheckbox"] label {
+ min-height:48px; align-items:center; }
+[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p { font-size:15px; }
+[data-testid="stExpander"] details { border-color:var(--line); border-radius:12px; }
+[data-testid="stExpander"] summary { min-height:48px; }
+[data-testid="stExpander"] summary p { font-size:15px; }
+.stButton button, .stDownloadButton button, .stLinkButton a {
+ min-height:48px; border-radius:10px; font-size:15px; font-weight:550; padding:10px 16px;
+ transition:border-color .15s,background .15s; overflow-wrap:anywhere; }
+.stButton button p, .stDownloadButton button p, .stLinkButton a p {
+ font-size:15px; line-height:1.35; }
+.stButton button:focus-visible, .stDownloadButton button:focus-visible,
+.stLinkButton a:focus-visible, [data-testid="stFileUploaderDropzone"] button:focus-visible {
+ outline:2px solid #f0ce98; outline-offset:3px; }
+.stButton button[kind="primary"], .stDownloadButton button[kind="primary"],
+.stLinkButton a[kind="primary"] { background:var(--gold); color:#181b20;
+ border:1px solid var(--gold); }
 .stButton button[kind="primary"]:hover:not(:disabled),
-.stDownloadButton button[kind="primary"]:hover:not(:disabled) {
- background:#e8c58f; border-color:#e8c58f; color:#10151c; }
-.stButton button[kind="primary"]:disabled {
- background:#33343a; border-color:#42444b; color:#9b9ca2; cursor:not-allowed; }
-.quiet-note { color:#91a0b4; font-size:11px; line-height:1.8; }
-.promise-row { display:flex; gap:26px; flex-wrap:wrap; padding:19px 0 0;
- color:#aeb7c3; font-size:11px; }
-.promise-row span::before { content:'✓'; color:#d8af72; margin-right:7px; }
+.stDownloadButton button[kind="primary"]:hover:not(:disabled),
+.stLinkButton a[kind="primary"]:hover { background:#ebc793; border-color:#ebc793; color:#141922; }
+.stButton button[kind="secondary"], .stDownloadButton button[kind="secondary"],
+.stLinkButton a[kind="secondary"] { background:#172332; border-color:#3c4b5e; color:#e5eaf0; }
+.stButton button[kind="primary"]:disabled { background:#313740; border-color:#444d59;
+ color:#aab1bd; cursor:not-allowed; }
+.quiet-note { color:var(--muted); font-size:13px; line-height:1.7; }
+.promise-row { display:flex; gap:24px; flex-wrap:wrap; padding:20px 0 0;
+ color:#b4c0cf; font-size:13px; }
+.promise-row span::before { content:'✓'; color:#e3bd83; margin-right:8px; }
 .workspace-title { display:flex; justify-content:space-between; align-items:flex-start;
- gap:20px; margin:2px 0 24px; }
-.workspace-title h1 { font-family:Georgia,serif; font-weight:400; font-size:39px;
- line-height:1.2; letter-spacing:-1px; margin:0 0 10px; padding:0; overflow-wrap:anywhere; }
-.workspace-title p { color:#93a1b5; font-size:12px; margin:0; }
-.status-pill { font-size:10px; border-radius:30px; padding:7px 12px; letter-spacing:.5px;
- border:1px solid #414354; color:#b9c1cf; white-space:nowrap; }
-.status-pill.ready { border-color:#45634f; color:#b3ceba; background:#253e2a40; }
-.status-pill.processing { border-color:#6c5a3e; color:#ddba87; background:#4b3d2740; }
-.status-pill.failed { border-color:#83564f; color:#e1b0a5; background:#693b3340; }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:24px; }
-.stat { border:1px solid #293344; padding:17px 20px; border-radius:11px; background:#111923; }
-.stat label { display:block; font-size:9px; color:#97a5b7; letter-spacing:1.2px;
- text-transform:uppercase; margin-bottom:8px; }
-.stat strong { font-size:23px; font-weight:450; color:#eeeae2; }
-.stage-row { display:flex; gap:12px; align-items:center; margin:12px 0 5px; }
-.stage-number { border:1px solid #364154; width:30px; height:30px; border-radius:8px;
- display:grid; place-items:center; color:#8b9aad; font-size:11px; }
-.stage-number.done { border-color:#5c6450; background:#39402e60; color:#c8c6a2; }
-.stage-number.in_progress { border-color:#a28455; color:#dfbf8e; background:#60492b45; }
-.stage-number.failed { border-color:#965c52; color:#ecb1a0; }
-.stage-name { flex:1; font-size:12px; color:#e2e3e5; }
-.stage-detail { font-size:10px; color:#99a5b7; }
-[data-testid="stProgress"] { margin-bottom:11px; }
-[data-testid="stProgress"] > div > div { background:#26303d; }
-[data-testid="stProgress"] > div > div > div > div { background:#c3a06b; }
+ gap:20px; margin:8px 0 26px; }
+.workspace-title > div { min-width:0; }
+.workspace-title h1 { font-family:Georgia,'Times New Roman',serif; font-weight:400;
+ font-size:46px; line-height:1.15; letter-spacing:-1.3px; margin:0 0 12px; padding:0;
+ color:var(--cream); overflow-wrap:anywhere; }
+.workspace-title p { color:var(--muted); font-size:13px; line-height:1.6; margin:0; }
+.status-pill { font-size:12px; border-radius:30px; padding:8px 13px; letter-spacing:.3px;
+ border:1px solid #485568; color:#cbd3df; white-space:nowrap; }
+.status-pill.ready { border-color:#4a6856; color:#c0dfc6; background:#243a2c60; }
+.status-pill.processing { border-color:#80663f; color:#e9c58e; background:#4b3d2740; }
+.status-pill.failed { border-color:#956257; color:#f0c0b5; background:#693b3340; }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px;
+ margin-bottom:24px; }
+.stat { border:1px solid var(--line); padding:20px 22px; border-radius:13px;
+ background:linear-gradient(135deg,#15202d,#111a26); min-width:0; }
+.stat label { display:block; font-size:10px; color:#adbbcc; letter-spacing:1.1px;
+ text-transform:uppercase; margin-bottom:10px; line-height:1.4; }
+.stat strong { font-size:27px; font-weight:500; color:var(--cream); line-height:1.25; }
+.stage-row { display:flex; gap:10px; align-items:center; margin:16px 0 8px; }
+.stage-number { border:1px solid #415066; width:34px; height:34px; border-radius:9px;
+ display:grid; place-items:center; flex-shrink:0; color:#b0bed0; font-size:12px; }
+.stage-number.done { border-color:#62705d; background:#35413265; color:#d5dcc1; }
+.stage-number.in_progress { border-color:#a28455; color:#edcd9b; background:#60492b45; }
+.stage-number.failed { border-color:#965c52; color:#f2beaf; }
+.stage-name { flex:1; min-width:0; font-size:14px; color:#e5e9ee; line-height:1.4; }
+.stage-detail { font-size:12px; color:#b1bed0; line-height:1.5; text-align:right; }
+[data-testid="stProgress"] { margin-bottom:10px; }
+[data-testid="stProgress"] > div > div { background:#2b3544; }
+[data-testid="stProgress"] > div > div > div > div { background:#d9b375; }
 .empty-preview { display:flex; min-height:280px; flex-direction:column; justify-content:center;
- align-items:center; text-align:center; padding:30px; border:1px solid #293344;
- border-radius:12px; background:radial-gradient(ellipse at center,#2c35463d,transparent),#0c131d; }
-.preview-icon { font-family:Georgia,serif; font-size:33px; color:#c5a878; margin-bottom:15px; }
-.empty-preview h3 { font-family:Georgia,serif; font-size:25px; font-weight:400; margin:0 0 9px; }
-.empty-preview p { color:#8f9eb2; font-size:12px; line-height:1.8; max-width:320px; }
-.export-caption { font-size:11px; color:#a0acbd; margin:13px 0 18px; }
-.footer { display:flex; justify-content:space-between; gap:16px; border-top:1px solid #273141;
- color:#7f8da1; font-size:10px; padding-top:18px; margin-top:31px; }
-@media(max-width:1000px) { .stMainBlockContainer { padding:2rem 1.5rem; }
- .hero { gap:20px; } .hero h1 { font-size:42px; } .film-art { height:200px; } }
-@media(max-width:700px) { .hero { grid-template-columns:1fr; } .film-art { display:none; }
- .hero h1 { font-size:34px; } .stats { grid-template-columns:repeat(2,1fr); }
- .stat { padding:13px 15px; } .workspace-title h1 { font-size:29px; }
- .topline { font-size:9px; margin-bottom:24px; } .stMainBlockContainer { padding:1.5rem 1rem; }
- .stage-detail { max-width:130px; text-align:right; } .promise-row { gap:13px; } }
+ align-items:center; text-align:center; padding:32px; border:1px solid #354152;
+ border-radius:13px; background:radial-gradient(ellipse at center,#3942543d,transparent),#0e1722; }
+.preview-icon { font-family:Georgia,serif; font-size:35px; color:#dfb575; margin-bottom:17px; }
+.empty-preview h3 { font-family:Georgia,serif; font-size:30px; font-weight:400;
+ color:var(--cream); line-height:1.3; margin:0 0 12px; }
+.empty-preview p { color:#afbdce; font-size:15px; line-height:1.75; max-width:360px; }
+.export-caption { font-size:13px; color:#b7c2d0; line-height:1.6; margin:14px 0 18px; }
+.st-key-export_panel video { width:100%; max-width:100%; border-radius:12px; display:block;
+ background:#05090e; }
+.footer { display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line);
+ color:#a1afc2; font-size:12px; line-height:1.6; padding-top:20px; margin-top:32px; }
+@media(max-width:1100px) {
+ .stMainBlockContainer { padding:2.1rem 1.75rem 2.5rem; }
+ .hero { gap:28px; } .hero h1 { font-size:44px; } .film-art { height:218px; }
+ .stat { padding:18px 16px; } .stat strong { font-size:25px; }
+}
+@media(max-width:850px) {
+ .st-key-create_grid [data-testid="stHorizontalBlock"],
+ .st-key-project_grid [data-testid="stHorizontalBlock"],
+ .st-key-export_actions [data-testid="stHorizontalBlock"] {
+  flex-wrap:wrap!important; gap:1rem!important; }
+ .st-key-create_grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+ .st-key-project_grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+ .st-key-export_actions [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+  flex:1 1 100%!important; width:100%!important; min-width:0!important; }
+ .hero { grid-template-columns:1.2fr .85fr; gap:22px; }
+ .hero h1 { font-size:40px; letter-spacing:-1.2px; } .hero p { font-size:15px; }
+ .film-art { height:190px; } .film-stack { top:55px; left:18px; right:18px; gap:7px; }
+ .film-frame { height:78px; } .art-label { left:18px; font-size:9px; }
+ .art-timeline { left:18px; right:18px; bottom:23px; }
+ .stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:600px) {
+ .stMainBlockContainer { padding:2.1rem 16px 2rem; }
+ .workspace-top { gap:12px; padding-bottom:17px; }
+ .workspace-brand { font-size:21px; }
+ .workspace-tagline { font-size:10px; letter-spacing:1.15px; }
+ .workspace-top .local-pill { font-size:9px; padding:7px 9px; letter-spacing:.4px; }
+ .st-key-workspace_nav { padding:12px 0 16px; margin-bottom:6px; }
+ .st-key-workspace_nav [data-testid="stHorizontalBlock"] { gap:10px; }
+ .st-key-workspace_nav [data-testid="stColumn"]:first-child {
+  flex:1 1 0!important; min-width:0!important; }
+ .st-key-workspace_nav [data-testid="stColumn"]:last-child {
+  flex:0 0 110px!important; width:110px!important; min-width:110px!important; }
+ .st-key-workspace_nav .stButton button { padding:10px 11px; }
+ .topline { font-size:10px; margin-bottom:20px; gap:10px; letter-spacing:.6px; }
+ .hero { grid-template-columns:minmax(0,1fr); gap:22px; padding:10px 0 20px; }
+ .hero h1 { font-size:39px; line-height:1.12; letter-spacing:-1.2px; margin-bottom:16px; }
+ .hero p { font-size:16px; line-height:1.65; max-width:100%; }
+ .film-art { display:none; }
+ .art-label { top:15px; left:20px; font-size:9px; }
+ .film-stack { top:41px; left:23px; right:23px; gap:9px; transform:rotate(-4deg); }
+ .film-frame { height:65px; } .film-frame i { bottom:14px; font-size:20px; }
+ .art-timeline { left:21px; right:21px; bottom:18px; }
+ .step-strip { gap:13px 20px; padding:8px 0 20px; }
+ .step-item { font-size:13px; gap:8px; } .step-item b { width:25px; height:25px; font-size:11px; }
+ .eyebrow, .step-kicker { font-size:10px; letter-spacing:1.35px; margin-bottom:10px; }
+ .section-head { gap:10px; margin-bottom:16px; }
+ .section-head h2 { font-size:21px; } .section-head small { font-size:10px; }
+ .st-key-upload_panel, .st-key-edit_panel, .st-key-stage_panel, .st-key-export_panel {
+  padding:3px 1px; }
+ .panel-title { font-size:19px; } .panel-note { font-size:15px; margin-bottom:18px; }
+ [data-testid="stFileUploaderDropzone"] { padding:18px 12px; min-height:142px;
+  flex-wrap:wrap; gap:12px; }
+ [data-testid="stFileUploaderDropzone"] > div { min-width:0; }
+ [data-testid="stFileUploaderDropzoneInstructions"] { min-width:0; }
+ [data-testid="stFileUploaderDropzone"] [data-testid="stMarkdownContainer"] p {
+  overflow-wrap:anywhere; }
+ [data-testid="stFileUploaderDropzone"] button { min-height:48px; padding:9px 11px; }
+ .workspace-title { gap:12px; flex-wrap:wrap; margin:4px 0 20px; }
+ .workspace-title h1 { font-size:35px; letter-spacing:-.8px; margin-bottom:9px; }
+ .workspace-title p { font-size:12px; }
+ .status-pill { font-size:11px; padding:7px 11px; }
+ .stats { gap:10px; margin-bottom:20px; }
+ .stat { padding:15px 14px; border-radius:11px; }
+ .stat label { font-size:9px; letter-spacing:.8px; margin-bottom:9px; }
+ .stat strong { font-size:24px; }
+ .stage-row { gap:9px; flex-wrap:wrap; }
+ .stage-name { font-size:14px; }
+ .stage-detail { font-size:12px; max-width:110px; overflow-wrap:anywhere; }
+ .promise-row { gap:12px 18px; padding-top:17px; font-size:12px; }
+ .empty-preview { min-height:236px; padding:24px 16px; }
+ .empty-preview h3 { font-size:26px; } .empty-preview p { font-size:14px; }
+ .export-caption { font-size:12px; margin:12px 0 16px; }
+ .footer { flex-direction:column; gap:8px; margin-top:26px; padding-top:18px; font-size:11px; }
+}
+@media(max-width:360px) {
+ .workspace-brand { font-size:19px; } .workspace-tagline { letter-spacing:.65px; }
+ .workspace-top .local-pill { padding:6px 7px; font-size:8px; }
+ .hero h1 { font-size:34px; } .hero p { font-size:15px; }
+ .section-head { align-items:flex-start; } .section-head small { max-width:76px; text-align:right; }
+ .stage-detail { flex-basis:100%; max-width:none; padding-left:43px; text-align:left; }
+ .workspace-title h1 { font-size:32px; }
+}
 @media(prefers-reduced-motion:reduce) { * { transition:none!important; animation:none!important; } }
 </style>
 """
@@ -376,6 +504,10 @@ def _hero() -> None:
         '<div class="film-frame"><i>01</i></div><div class="film-frame"><i>02</i></div>'
         '<div class="film-frame"><i>03</i></div></div><div class="art-timeline">'
         "<span></span><span></span><span></span><b>ONE STORY</b></div></div></section>"
+        '<div class="step-strip" aria-label="Three steps to your film">'
+        '<div class="step-item"><b>01</b><span>Bring your episodes</span></div>'
+        '<div class="step-item"><b>02</b><span>Shape your edit</span></div>'
+        '<div class="step-item"><b>03</b><span>Watch & download</span></div></div>'
         '<div class="divider"></div>'
     )
 
@@ -403,7 +535,8 @@ def _new_project(runner: JobRunner, settings: Settings) -> None:
         '<div class="section-head"><h2>Create your next cut</h2>'
         "<small>01 / NEW PROJECT</small></div>"
     )
-    left, right = st.columns([1.15, 1], gap="large")
+    with st.container(key="create_grid"):
+        left, right = st.columns([1.15, 1], gap="large")
     with left, st.container(border=True, key="upload_panel"):
         _html(
             '<div class="panel-title">Bring the season</div>'
@@ -640,10 +773,11 @@ def _exports(state: JobState, directory: Path, selection: SelectionDoc | None) -
             selection.selected_total_seconds / 60 if selection else state.params.target_seconds / 60
         )
         _html(
-            f'<div class="export-caption">{duration:g} min · 720p · MP4 &nbsp; / &nbsp; '
+            f'<div class="export-caption">{duration:.1f} min · 720p · MP4 &nbsp; / &nbsp; '
             "Ready for your next screening.</div>"
         )
-        movie_column, subtitle_column = st.columns([1.1, 1])
+        with st.container(key="export_actions"):
+            movie_column, subtitle_column = st.columns([1.1, 1])
         with movie_column:
             st.link_button(
                 "Download film",
@@ -705,7 +839,7 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
     name = html.escape(state.params.name or "Untitled season")
     _html(
         f'<div class="workspace-title"><div><div class="eyebrow">Your editing workspace</div>'
-        f"<h1>{name}</h1><p>Project {html.escape(job_id)} · "
+        f"<h1>{name}</h1><p>Your season edit · "
         f"{state.created_at.strftime('%d %b %Y')}</p></div>"
         f'<span class="status-pill {style}">{label}</span></div>'
     )
@@ -732,11 +866,13 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
         f'<div class="stat"><label>Film runtime</label><strong>{film_runtime}</strong></div>'
         f'<div class="stat"><label>Original runtime</label><strong>{original}</strong></div></div>'
     )
-    for required in state.params.must_keep_ranges:
-        st.caption(
-            f"Protected moment · {required.episode} · "
-            f"{_moment_time(required.start)}–{_moment_time(required.end)} · Saved request"
-        )
+    if state.params.must_keep_ranges:
+        with st.expander(f"Protected moments · {len(state.params.must_keep_ranges)} saved"):
+            for required in state.params.must_keep_ranges:
+                st.caption(
+                    f"Protected moment · {required.episode} · "
+                    f"{_moment_time(required.start)}–{_moment_time(required.end)} · Saved request"
+                )
     if selection:
         st.caption(f"{kept} story clips selected in episode order.")
         if selection.selected_total_seconds < state.params.target_seconds * 0.98:
@@ -768,26 +904,29 @@ def _project_view(runner: JobRunner, job_id: str) -> None:
                 st.rerun()
             except (OSError, ValueError, RuntimeError) as exc:
                 st.error(f"Couldn't resume your edit: {exc}")
-    progress_column, export_column = st.columns([0.85, 1.5], gap="large")
+    with st.container(key="project_grid"):
+        export_column, progress_column = st.columns([1.5, 0.85], gap="large")
     with progress_column, st.container(border=True, key="stage_panel"):
         _html('<div class="section-head"><h2>The journey</h2><small>6 STAGES</small></div>')
         overall = sum(_stage_progress(state, name) for name, _ in _STAGES) / len(_STAGES)
         if state.stages.render.status != "done":
             overall = min(overall, 0.99)
         st.progress(overall, text=f"{int(overall * 100)}% complete")
-        for index, (key, title) in enumerate(_STAGES, 1):
-            stage = getattr(state.stages, key)
-            symbol = "✓" if stage.status == "done" else f"{index:02d}"
-            _html(
-                f'<div class="stage-row"><span class="stage-number {stage.status}">{symbol}</span>'
-                f'<span class="stage-name">{title}</span>'
-                f'<span class="stage-detail">{_stage_detail(state, key)}</span></div>'
-            )
-            st.progress(_stage_progress(state, key))
-            if key == "transcribe":
-                activity = _transcription_activity(state, directory, running=running)
-                if activity:
-                    st.info(activity, icon=":material/graphic_eq:")
+        with st.expander("Editing progress", expanded=state.stages.render.status != "done"):
+            for index, (key, title) in enumerate(_STAGES, 1):
+                stage = getattr(state.stages, key)
+                symbol = "✓" if stage.status == "done" else f"{index:02d}"
+                _html(
+                    f'<div class="stage-row">'
+                    f'<span class="stage-number {stage.status}">{symbol}</span>'
+                    f'<span class="stage-name">{title}</span>'
+                    f'<span class="stage-detail">{_stage_detail(state, key)}</span></div>'
+                )
+                st.progress(_stage_progress(state, key))
+                if key == "transcribe":
+                    activity = _transcription_activity(state, directory, running=running)
+                    if activity:
+                        st.info(activity, icon=":material/graphic_eq:")
         st.caption(
             "Updated automatically while processing."
             if running
@@ -856,6 +995,43 @@ def _refine_edit(runner: JobRunner, state: JobState) -> None:
                 st.error(f"Couldn't refine this edit: {exc}")
 
 
+def _pick_project() -> None:
+    st.session_state.active_job = st.session_state.project_picker
+
+
+def _workspace_navigation(runner: JobRunner, states: list[JobState]) -> None:
+    names = {
+        state.job_id: (
+            f"{state.params.name or 'Untitled season'} · "
+            f"{_job_status(state, runner.is_running(state.job_id))[0]}"
+        )
+        for state in states
+    }
+    options: list[str | None] = [None, *names]
+    current = st.session_state.active_job
+    if current not in options:
+        current = None
+        st.session_state.active_job = None
+    if st.session_state.get("project_picker") != current:
+        st.session_state.project_picker = current
+    with st.container(key="workspace_nav"):
+        picker, action = st.columns([3, 1], gap="small")
+        with picker:
+            st.selectbox(
+                "Your projects",
+                options,
+                format_func=lambda value: names.get(value, "Create a new film"),
+                key="project_picker",
+                on_change=_pick_project,
+            )
+        with action:
+            if st.button(
+                "New film", icon=":material/add:", key="new_film", width="stretch"
+            ):
+                st.session_state.active_job = None
+                st.rerun()
+
+
 def main() -> None:
     """Render the local editing workspace and poll jobs without rerunning models."""
     st.set_page_config(
@@ -875,11 +1051,14 @@ def main() -> None:
         st.error(f"The workspace configuration needs attention: {exc}")
         return
     st.session_state.setdefault("active_job", None)
-    _sidebar(runner, _saved_jobs(runner.jobs_dir))
+    states = _saved_jobs(runner.jobs_dir)
+    _sidebar(runner, states)
     _html(
-        '<div class="topline"><div>WORKSPACE &nbsp; / &nbsp; <span>THE EDITING ROOM</span></div>'
+        '<div class="workspace-top"><div><div class="workspace-brand">Season to Screen</div>'
+        '<div class="workspace-tagline">The editing room</div></div>'
         '<div class="local-pill">LOCAL WORKSPACE</div></div>'
     )
+    _workspace_navigation(runner, states)
     job_id = st.session_state.active_job
     if job_id is None:
         _new_project(runner, settings)

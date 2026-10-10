@@ -520,6 +520,38 @@ class JobState(ContractModel):
     errors: list[ErrorRecord] = Field(default_factory=list)
 
 
+class WebHealthDoc(ContractModel):
+    """Public processing-service availability and browser upload limits."""
+
+    status: Literal["ok"] = "ok"
+    max_upload_bytes: int = Field(gt=0)
+    default_target_minutes: float = Field(ge=0.5, le=1440)
+
+
+class WebJobDetailDoc(ContractModel):
+    """Authenticated web transport around unchanged persisted job contracts."""
+
+    state: JobState
+    selection: SelectionDoc | None = None
+    running: bool = Field(default=False, strict=True)
+    stopping: bool = Field(default=False, strict=True)
+    error: str | None = None
+
+
+class WebMediaTicketDoc(ContractModel):
+    """Expiring, output-scoped URLs for native browser playback and downloads."""
+
+    movie_url: str = Field(min_length=1)
+    subtitles_url: str = Field(min_length=1)
+    expires_in: int = Field(gt=0)
+
+
+class WebRefineRequestDoc(ContractModel):
+    """Protected source moments in float seconds for a new refined edit."""
+
+    must_keep_ranges: list[RequiredRange] = Field(default_factory=list, max_length=100)
+
+
 class ProcessingControl(ContractModel):
     """The processing_control.json stop request, separate from worker checkpoints."""
 

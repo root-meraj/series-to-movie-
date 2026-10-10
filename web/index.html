@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0c1117">
+    <meta name="description" content="Turn a season into a story worth watching. Your Season to Screen editing workspace.">
+    <title>Season to Screen — The editing room</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230c1117'/%3E%3Ctext x='32' y='47' text-anchor='middle' font-size='46' font-family='Georgia' fill='%23e6b970'%3ES%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./config.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Workspace navigation">
+        <a class="brand" href="#new" aria-label="Season to Screen home">
+          <span class="brand-mark" aria-hidden="true">S<span>↗</span></span>
+          <span><strong>Season to Screen</strong><small>THE EDITING ROOM</small></span>
+        </a>
+        <nav class="primary-nav" aria-label="Main navigation">
+          <a class="nav-link" href="#new" data-nav="new"><span aria-hidden="true">＋</span> New film</a>
+          <a class="nav-link" href="#films" data-nav="films"><span aria-hidden="true">▤</span> Your films <span id="film-count" class="nav-count">0</span></a>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="workspace-note"><span class="tiny-rule"></span><p>A season, distilled.</p><small>Keep the story.<br>Make every scene count.</small></div>
+          <button class="connection-button" id="connection-button" type="button"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">Connect workspace</span><span aria-hidden="true">↗</span></button>
+        </div>
+      </aside>
+      <div class="main-shell">
+        <header class="topbar"><span class="breadcrumb" id="breadcrumb">WORKSPACE <span>/</span> NEW FILM</span><button class="topbar-connect" id="topbar-connect" type="button"><span class="status-dot" aria-hidden="true"></span><span id="topbar-status">Not connected</span></button></header>
+        <main id="main" tabindex="-1"></main>
+        <footer class="site-footer"><span>SEASON TO SCREEN</span><span>Less footage. More story.</span></footer>
+      </div>
+    </div>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <dialog id="connect-dialog" aria-labelledby="connect-title">
+      <form id="connect-form">
+        <div class="dialog-top"><span class="eyebrow">YOUR WORKSPACE</span><button class="icon-button" type="button" data-close-dialog aria-label="Close connection settings">×</button></div>
+        <h2 id="connect-title">Bring your editing<br>room online.</h2>
+        <p class="muted">Connect to the server that processes and stores your films. Your phone and computer can use the same workspace.</p>
+        <label for="api-url">Workspace address</label><input id="api-url" name="apiUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://your-workspace.example.com" required>
+        <p class="field-help">Use your processing server’s HTTPS address when this site is hosted online.</p>
+        <label for="access-key">Workspace access key</label><input id="access-key" name="accessKey" type="password" autocomplete="off" spellcheck="false" placeholder="Enter your workspace key" required>
+        <p class="field-help">This key stays in this tab’s memory. It is cleared when you reload or disconnect.</p>
+        <p id="connect-error" class="inline-error" role="alert" hidden></p>
+        <div class="dialog-actions"><button class="button secondary" id="disconnect-button" type="button" hidden>Disconnect</button><button class="button primary" id="connect-submit" type="submit">Connect workspace <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="refine-dialog" aria-labelledby="refine-title">
+      <form id="refine-form">
+        <div class="dialog-top"><span class="eyebrow">MAKE IT YOUR CUT</span><button class="icon-button" type="button" data-close-dialog aria-label="Close refine film">×</button></div>
+        <h2 id="refine-title">Every important<br>moment belongs.</h2>
+        <p class="muted">Create a fresh edit. Add moments you want to keep using their episode and original timestamps. Your current film stays available.</p>
+        <p class="field-help">Times are in minutes. For example, 3.5 = 3 minutes 30 seconds.</p>
+        <div id="range-list"></div>
+        <button id="add-range" class="button text-button" type="button">＋ Keep another moment</button>
+        <p id="refine-error" class="inline-error" role="alert" hidden></p>
+        <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog>Cancel</button><button class="button primary" id="refine-submit" type="submit">Create refined film <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <noscript><div class="noscript">Enable JavaScript to connect your workspace and create films.</div></noscript>
+  </body>
+</html>

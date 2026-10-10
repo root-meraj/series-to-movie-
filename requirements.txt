@@ -13,6 +13,10 @@ python-dotenv
 tqdm
 rich
 streamlit>=1.64,<2
+starlette>=0.47.2,<2
+uvicorn>=0.35,<1
+python-multipart>=0.0.20,<1
+httpx>=0.28,<1
 rouge-score
 bert-score
 pytest

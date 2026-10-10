@@ -445,8 +445,9 @@ Phase 10 UI clarifications (existing JSON keys are unchanged):
 - `sts/app/ui.py` is launched with `streamlit run sts/app/ui.py` from the project
   directory. `.streamlit/config.toml` supplies the dark theme, loopback binding,
   and 2 GB upload limit. Native Streamlit widgets remain keyboard accessible;
-  responsive styling collapses the sidebar on narrow screens. No authentication,
-  website hosting, or evaluation scripts are part of this phase.
+  responsive styling collapses the sidebar on narrow screens. The later user request
+  extends Phase 10 maintenance with a mobile Vercel frontend and an authenticated
+  processing API; evaluation scripts remain Phase 11.
 - `controller.create_job(...) -> JobState` persists a pending job without running
   stages. `run_job` reuses it and retains the Phase 9 behavior. `sts/app/runner.py`
   serializes UI pipeline work in one background worker, shared through
@@ -491,6 +492,47 @@ Phase 10 UI clarifications (existing JSON keys are unchanged):
   upload/progress/preview/download flow. Tests use MockProvider/deterministic seams;
   browser smoke uses synthetic media and local models without external LLM calls.
   Phase 10 stops before Phase 11 evaluation.
+
+Phase 10 mobile hosting extension requested by the user:
+
+- `web/` is a static HTML/CSS/JavaScript frontend, with Vercel Root Directory `web`
+  and no Python build. `sts/app/web_api.py` serves a separate persistent Python
+  processing service. Uploads and ranged movie streams go directly to that backend.
+  The existing Streamlit application remains a local workspace. No Phase 11 work.
+- `WebSettings` reads backend deployment settings from `.env`: a private
+  `STS_WEB_ACCESS_TOKEN` (at least 32 non-whitespace characters), explicit
+  `STS_WEB_ALLOWED_ORIGINS`, `STS_WEB_JOBS_DIR`, `STS_WEB_HOST`, `STS_WEB_PORT`, and
+  optional production HTTPS `STS_WEB_PUBLIC_URL`. The default host is loopback.
+  The API refuses startup without its access token and allowed origins.
+- The API provides one shared authorized workspace, not separate user accounts.
+  Except health, requests require `Authorization: Bearer <token>`. The frontend
+  holds that token only in page memory, never in public configuration or storage.
+  Pipeline credentials and scoring settings stay in the backend `.env`.
+- Transport JSON models live in `sts/schemas.py`. Existing persisted contracts
+  retain their keys and meanings. `WebHealthDoc` is
+  `{"status":"ok","max_upload_bytes":2147483648,"default_target_minutes":120}`.
+  `WebJobDetailDoc` is `{"state":JobState,"selection":SelectionDoc|null,
+  "running":false,"stopping":false,"error":null}`. `GET /api/jobs` returns a list
+  of `JobState`; `GET /api/jobs/{id}` returns `WebJobDetailDoc`.
+- `POST /api/jobs` receives multipart `archive`, `target_minutes`, and optional
+  `name`, validates a ZIP up to 2 GB, persists it using `JobRunner.create`, starts
+  the serialized background worker, and returns detail with status 201. Browser
+  filenames never select disk paths. `/resume` and `/stop` return detail; `/refine`
+  accepts `WebRefineRequestDoc` `{"must_keep_ranges":[RequiredRange]}` (at most 100),
+  creates a new edit, preserves the original, and returns detail with status 201.
+- `POST /api/jobs/{id}/media-ticket` returns `WebMediaTicketDoc` with `movie_url`,
+  `subtitles_url`, and `expires_in` seconds. Each signed ticket permits only its
+  named job/output for eight hours; it is not the workspace bearer token.
+  GET/HEAD `/movie` and `/subtitles` accept that ticket or bearer authentication,
+  serve bounded reads and byte ranges, and use `download=1` for attachment headers.
+  Only confined `condensed_movie.mp4` and `condensed.srt` outputs are exposed.
+- The frontend starts with an honest connection screen when unconfigured, uses
+  native file selection and upload progress, polls only active jobs, preserves
+  the video element across progress updates, and offers stop/resume/refine actions.
+  Mobile layouts support 320 px widths, keyboard focus, and 48 px main controls.
+  Production needs a separate HTTPS backend with durable job/model storage.
+- API tests use injected deterministic runners and synthetic outputs, never real
+  model/provider calls. Ruff and the complete pytest suite must pass before commit.
 
 Phase 10 transcription activity extension (existing keys retain their meaning):
 

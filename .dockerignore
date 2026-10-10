@@ -1,0 +1,9 @@
+# A strict allowlist keeps secrets, uploads, local environments, and films out
+# of the build context, including any files not covered by .gitignore.
+**
+!requirements.txt
+!pyproject.toml
+!sts/
+!sts/**
+sts/**/__pycache__/
+sts/**/*.py[cod]
