@@ -456,22 +456,26 @@ def test_uploaded_job_retries_a_transient_windows_directory_lock(
     """A transient Windows reader cannot discard a valid uploaded job during publication."""
     original = Path.replace
     attempts: list[Path] = []
+    injected_locks: list[PermissionError] = []
 
     def replace(source: Path, destination: Path) -> Path:
         if source.parent.name.startswith(".sts-upload-"):
             attempts.append(source)
-            if len(attempts) <= 2:
+            if len(injected_locks) < 2:
                 exception = PermissionError("Temporary directory lock")
                 exception.winerror = 5
+                injected_locks.append(exception)
                 raise exception
         return original(source, destination)
 
     monkeypatch.setattr(Path, "replace", replace)
-    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
-    state = job_runner.create(_upload(b"preserved episode"), 2)
-    assert len(attempts) == 3
+    upload = _upload(b"preserved episode")
+    uploaded_bytes = upload.getvalue()
+    state = job_runner.create(upload, 2)
+    assert len(injected_locks) == 2
+    assert len(attempts) >= 3
     assert job_runner.get_state(state.job_id) == state
-    assert state.params.zip_path.is_file()
+    assert state.params.zip_path.read_bytes() == uploaded_bytes
     assert not job_runner.busy
 
 
