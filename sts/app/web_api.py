@@ -217,8 +217,9 @@ class _WebAPI:
     def _artifact(self, job_id: str, relative: str) -> Path:
         directory = self._job_directory(job_id)
         try:
-            path = (directory / relative).resolve(strict=True)
-            if not path.is_relative_to(directory) or not path.is_file():
+            candidate = directory / relative
+            path = candidate.resolve(strict=True)
+            if path != candidate or not path.is_relative_to(directory) or not path.is_file():
                 raise HTTPException(404, "Project file not found")
             return path
         except (OSError, RuntimeError):
