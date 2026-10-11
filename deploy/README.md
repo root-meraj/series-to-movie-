@@ -144,8 +144,9 @@ the access key, and export playback uses short-lived media tickets.
 
 ## Vercel frontend
 
-Import the GitHub repository into Vercel, set **Root Directory** to `web`, and
-use the static site's deployment settings documented in
+Import the GitHub repository into Vercel and leave **Root Directory** empty; the
+root `vercel.json` serves only `web/`. Existing projects rooted at `web` are also
+supported by `web/vercel.json`. Use the static site's deployment settings documented in
 [web/README.md](../web/README.md). Deploying the frontend alone provides the
 interface; upload and processing become available after its persistent backend
 is deployed and connected.

@@ -10,11 +10,33 @@ to connect their workspace.
 ## Deploy the frontend on Vercel
 
 1. Import the GitHub repository into Vercel.
-2. Set **Root Directory** to `web`.
+2. Leave **Root Directory** empty (the repository root).
 3. Choose **Framework Preset: Other**.
-4. Leave **Build Command** and **Install Command** empty. Use `.` as the output
-   directory if Vercel requests one.
+4. The root `vercel.json` skips installation and building and serves only `web/`.
+   If entering settings manually, use empty **Build Command** and **Install
+   Command**, and **Output Directory** `web`.
 5. Deploy. This publishes the frontend; processing needs the service below.
+
+An existing project whose **Root Directory** is already `web` also works:
+`web/vercel.json` applies the same static settings with **Output Directory** `.`.
+The configuration files override framework, command, and output settings for new
+deployments. See [Vercel's configuration reference](https://vercel.com/docs/project-configuration/vercel-json).
+
+### Fix a "No python entrypoint found" deployment
+
+That error means the deployment detected the repository's Python package instead
+of the static frontend. Pull the latest commit containing the root `vercel.json`,
+then deploy that commit. In **Settings → Build and Deployment**, set **Framework
+Preset** to **Other** and use one of these matching directory pairs:
+
+| Root Directory | Output Directory |
+| --- | --- |
+| Empty (repository root) | `web` |
+| `web` | `.` |
+
+Save the settings and deploy the latest `main` commit. Redeploying an older failed
+commit still uses that commit's files. The frontend does not require a Python
+entrypoint; the processing service is deployed separately below.
 
 To preset the processing service address, edit `web/config.js`:
 

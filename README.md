@@ -153,10 +153,12 @@ local workspace. The separate hosted frontend uses the processing API described 
 
 ## Mobile website on Vercel
 
-Import this GitHub repository into Vercel and set **Root Directory** to **`web`**.
-Choose **Other** as the framework; no build command is needed. The frontend is plain
+Import this GitHub repository into Vercel and leave **Root Directory** empty.
+The root `vercel.json` selects **Other**, skips installation and building, and serves
+only **`web/`**. An existing project with **Root Directory** set to **`web`** also
+works through `web/vercel.json`, which serves **`.`**. The frontend is plain
 HTML, CSS, and JavaScript and works on phones. See [web/README.md](web/README.md)
-for the exact frontend configuration.
+for the exact frontend configuration and a fix for Python entrypoint build errors.
 
 Run the video pipeline on a persistent server with FFmpeg and the Python dependencies.
 Vercel serves the interface; ZIP uploads and movie streams connect directly to the
