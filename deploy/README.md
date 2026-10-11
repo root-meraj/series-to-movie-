@@ -12,6 +12,10 @@ implemented.
 
 ## Backend configuration
 
+For an Azure for Students demo, use the server checklist and three-service
+deployment in [azure/README.md](azure/README.md). Student credit is limited, and
+the deployment remains one shared workspace for trusted testers.
+
 Copy `.env.example` to `.env` **on the processing server**, then configure:
 
 ```dotenv

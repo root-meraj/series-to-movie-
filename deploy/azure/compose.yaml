@@ -1,0 +1,150 @@
+# A single, trusted pilot workspace. Everyone holding its key can access every job.
+# Run from this directory after creating the private .env described in README.md.
+name: season-to-screen
+
+x-backend-image: &backend-image
+  image: season-to-screen-backend:azure
+  build:
+    context: ../..
+    dockerfile: deploy/Dockerfile
+
+services:
+  volume-init:
+    <<: *backend-image
+    user: "0:0"
+    network_mode: none
+    restart: "no"
+    # Named volumes also need the correct owner after restoring a backup.
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from pathlib import Path
+        roots = (Path('/app/data'), Path('/models'))
+        for directory in (Path('/app/data/jobs'), Path('/app/data/tmp'), *roots):
+            directory.mkdir(parents=True, exist_ok=True)
+        for root in roots:
+            os.chown(root, 10001, 10001, follow_symlinks=False)
+            for directory, children, files in os.walk(root, followlinks=False):
+                for name in children + files:
+                    os.chown(Path(directory) / name, 10001, 10001, follow_symlinks=False)
+    healthcheck:
+      disable: true
+    volumes:
+      - jobs:/app/data
+      - models:/models
+
+  backend:
+    <<: *backend-image
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 120s
+    cpus: 2.0
+    # CPU model memory needs a benchmark on the actual VM. Do not impose a
+    # smaller per-container RAM cap that kills an otherwise viable shared run.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+    environment:
+      # The access token is deliberately absent: the API reads the mounted .env.
+      STS_WEB_HOST: 0.0.0.0
+      STS_WEB_PORT: "8765"
+      STS_WEB_JOBS_DIR: /app/data/jobs
+      STS_WEB_PUBLIC_URL: https://${STS_BACKEND_DOMAIN:?Set STS_BACKEND_DOMAIN in deploy/azure/.env}
+      STS_WEB_ALLOWED_ORIGINS: ${STS_WEB_ALLOWED_ORIGINS:?Set the exact HTTPS Vercel origin in deploy/azure/.env}
+      LLM_PROVIDER: ollama
+      LLM_MODEL: ${LLM_MODEL:?Set LLM_MODEL in deploy/azure/.env and pull that model}
+      OLLAMA_BASE_URL: http://ollama:11434
+      ENABLE_OPENAI: "false"
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE: int8
+      RENDER_ENCODER: libx264
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      TOKENIZERS_PARALLELISM: "false"
+      TMPDIR: /app/data/tmp
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - jobs:/app/data
+      - models:/models
+    # The Dockerfile's /api/health healthcheck is inherited. It does not test NLP.
+    networks:
+      - processing
+
+  ollama:
+    # Official image, pinned to a verified release rather than an implicit latest.
+    image: ollama/ollama:0.40.3
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 2.0
+    # The provider explicitly requests 32K context for Qwen3. Flash attention
+    # and q8 cache depend on backend support; no claimed 8 GiB fit is implied.
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "1"
+      OLLAMA_KEEP_ALIVE: 30s
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    volumes:
+      - ollama:/root/.ollama
+    networks:
+      - processing
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      STS_BACKEND_DOMAIN: ${STS_BACKEND_DOMAIN:?Set STS_BACKEND_DOMAIN in deploy/azure/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - processing
+
+# These retain source files, checkpoints, output, model downloads and certificates.
+# Keep this project name and these volumes when updating. Do not use `down -v`.
+volumes:
+  jobs:
+  models:
+  ollama:
+  caddy-data:
+  caddy-config:
+
+# Only proxy has host ports. Backend and Ollama remain on the container network.
+# Outbound access is needed for downloading models and HTTPS certificates.
+networks:
+  processing:

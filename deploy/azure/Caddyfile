@@ -1,0 +1,38 @@
+{
+	admin off
+	# Request URLs can contain export tickets, including on failed proxy requests.
+	# Keep certificate/startup diagnostics without recording HTTP request logs.
+	log default {
+		exclude http.log.access http.log.error
+	}
+	servers {
+		timeouts {
+			read_header 30s
+			# No total deadline for large uploads/downloads over a phone connection.
+			read_body 0
+			write 0
+		}
+	}
+}
+
+{$STS_BACKEND_DOMAIN} {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	# Two GiB plus one MiB of multipart overhead; the API enforces two GiB per ZIP.
+	request_body {
+		max_size 2148532224
+	}
+	# No site `log` directive: access logging stays disabled.
+	# Forward paths, authorization, CORS preflights and Range headers unchanged.
+	reverse_proxy backend:8765 {
+		flush_interval -1
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 0
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}
