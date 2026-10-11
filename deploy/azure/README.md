@@ -1,11 +1,11 @@
-# Azure student backend: first private demo
+# Azure student backend: account demo
 
 Keep the website on Vercel and run this Docker deployment on one Ubuntu server.
 It includes the existing processing API, a private Ollama service, and Caddy for
 HTTPS. Persistent volumes keep jobs, downloaded models, and certificates across
-container restarts. This is a shared workspace for trusted testers. Separate
-accounts, ownership checks, a public job queue, and automatic storage cleanup
-are still required before accepting arbitrary public users.
+container restarts. Email/password accounts keep each user's projects private.
+A public job queue, email verification, password recovery, and automatic storage
+cleanup are still required before a broad public launch.
 
 ## 1. Review the server in Azure
 
@@ -79,7 +79,7 @@ cd series-to-movie-
 cp deploy/azure/.env.example deploy/azure/.env
 ```
 
-Generate the workspace key directly into the private file, without displaying it:
+Generate the operator key directly into the private file, without displaying it:
 
 ```sh
 python3 - <<'PY'
@@ -141,15 +141,25 @@ that a real film has rendered. Do not start a job before the Ollama model pull
 has completed. If the proxy has no certificate, inspect DNS and inbound ports
 before retrying; do not bypass certificate warnings.
 
-## 5. Connect Vercel and test one small film
+## 5. Enable accounts and test one small film
 
-Open the existing Vercel site and tap **Connect workspace**. Enter the backend
-address `https://YOUR_AZURE_HOSTNAME` and the generated private workspace key.
-This connects the site without rebuilding it. The website remembers only the
-address; the key remains in tab memory and must be entered after a reload.
+Set `STS_WEB_ACCOUNTS_ENABLED=true` in the server's private `.env`. Set
+`apiBaseUrl` in `web/config.js` to the backend HTTPS address and
+`accountsEnabled: true`, then redeploy the Vercel frontend. These are public
+settings; the operator key must never appear in this file.
 
-For a preset backend address, set only `apiBaseUrl` in `web/config.js` to that
-HTTPS address and redeploy the Vercel frontend. Keep the key private.
+Open the Vercel site, choose **Create account**, and enter an email and a password
+of 15 to 128 characters. Visitors do not need a server address or workspace key.
+Sessions expire after 24 hours and remain only in tab memory; after reloading,
+sign in again. Logout revokes that session and its film links. This demo does
+not verify email ownership or provide password recovery. The default account
+cap is 100 (`STS_WEB_MAX_ACCOUNTS`).
+
+Passwords use salted scrypt hashes. Accounts, session digests, project ownership,
+and login throttling are stored in `/app/data/accounts/accounts.sqlite3` on the
+persistent data volume. Back up that database together with the jobs. Existing
+projects without an owner remain accessible only through the operator API key;
+creating an account does not automatically claim them. Keep that key private.
 
 Test a small synthetic ZIP first. Verify upload, progress, stop/resume, MP4
 playback with seeking, and MP4/SRT downloads before trying a full season.
@@ -163,7 +173,7 @@ Keep the phone page open while uploading. There is one edit worker, with no
 public waiting queue: another concurrent edit can be rejected as busy.
 
 Monitor disk space and memory. Files remain on the server until deliberately
-cleaned up; this deployment does not add automatic retention or user isolation.
+cleaned up; this deployment does not add automatic retention.
 Do not distribute the workspace key to arbitrary visitors.
 
 ## 6. Preserve credit and saved work
@@ -180,4 +190,4 @@ and [auto-shutdown](https://learn.microsoft.com/en-us/azure/virtual-machines/aut
 Update the checkout and rebuild services with the same Compose project name and
 volumes. Do not use `docker compose down -v`, remove volumes, or delete the VM
 and its managed disks if saved jobs must remain available. Back up job files and
-models separately before destructive infrastructure changes.
+the account database, and models before destructive infrastructure changes.

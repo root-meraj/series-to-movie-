@@ -1,4 +1,4 @@
-# A single, trusted pilot workspace. Everyone holding its key can access every job.
+# Personal accounts share one processing server. The operator key can access all jobs.
 # Run from this directory after creating the private .env described in README.md.
 name: season-to-screen
 
@@ -56,6 +56,9 @@ services:
       # The access token is deliberately absent: the API reads the mounted .env.
       STS_WEB_HOST: 0.0.0.0
       STS_WEB_PORT: "8765"
+      # Only Caddy can reach this private container; use its forwarded client IP
+      # for account throttling. Directly exposed deployments keep loopback trust.
+      STS_WEB_TRUSTED_PROXY_IPS: "*"
       STS_WEB_JOBS_DIR: /app/data/jobs
       STS_WEB_PUBLIC_URL: https://${STS_BACKEND_DOMAIN:?Set STS_BACKEND_DOMAIN in deploy/azure/.env}
       STS_WEB_ALLOWED_ORIGINS: ${STS_WEB_ALLOWED_ORIGINS:?Set the exact HTTPS Vercel origin in deploy/azure/.env}

@@ -526,6 +526,40 @@ class WebHealthDoc(ContractModel):
     status: Literal["ok"] = "ok"
     max_upload_bytes: int = Field(gt=0)
     default_target_minutes: float = Field(ge=0.5, le=1440)
+    accounts_enabled: bool = False
+
+
+class WebCredentialsDoc(ContractModel):
+    """Bound account inputs without exposing passwords in diagnostics."""
+
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=15, max_length=128, repr=False)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        """Normalize login identifiers and reject malformed or whitespace-bearing addresses."""
+        import re
+
+        value = value.strip().casefold()
+        if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value) is None:
+            raise ValueError("Enter a valid email address")
+        return value
+
+
+class WebUserDoc(ContractModel):
+    """Public account identity, without credential or session storage details."""
+
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    email: str
+
+
+class WebSessionDoc(ContractModel):
+    """An opaque session returned once to the signed-in browser tab."""
+
+    user: WebUserDoc
+    session_token: str = Field(min_length=32, repr=False)
+    expires_in: int = Field(gt=0)
 
 
 class WebJobDetailDoc(ContractModel):

@@ -12,4 +12,5 @@ build/
 dist/
 tests/fixtures/
 data/jobs/*
+data/accounts/
 !data/jobs/.gitkeep

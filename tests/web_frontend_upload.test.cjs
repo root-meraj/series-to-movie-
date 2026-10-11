@@ -116,7 +116,7 @@ class Document {
   createElement(tagName) { return new Element(this, tagName, {}); }
 }
 
-function frontend() {
+function frontend(config = {}) {
   const document = new Document(fs.readFileSync(path.join(ROOT, "web", "index.html"), "utf8"));
   const fetches = [];
   const uploads = [];
@@ -124,14 +124,15 @@ function frontend() {
   const location = { protocol: "http:", hash: "#new", replace(value) { this.hash = value; } };
   const context = {
     document, location, URL, AbortController,
-    window: { STS_CONFIG: {}, addEventListener() {}, scrollTo() {} },
+    window: { STS_CONFIG: config, addEventListener() {}, scrollTo() {} },
     localStorage: { getItem() { return ""; }, setItem() {} },
     setTimeout() { return 1; }, clearTimeout() {},
     fetch: async (url, options) => {
       fetches.push({ url, options });
       assert.ok(responses.length, "Unexpected request: the harness never uses a real network");
       const payload = responses.shift();
-      return { ok: true, status: 200, json: async () => payload };
+      const status = payload?._status || 200;
+      return { ok: status < 400, status, json: async () => payload };
     },
     FormData: class { constructor() { this.entries = []; } append(...entry) { this.entries.push(entry); } },
     XMLHttpRequest: class {
@@ -150,7 +151,7 @@ function frontend() {
     return found;
   };
   return {
-    app: context.frontendState, element, uploads, fetches, location,
+    app: context.frontendState, element, uploads, fetches, location, responses,
     async choose(name, size) {
       const file = { name, size };
       element("#archive").files = [file];
@@ -170,6 +171,57 @@ function frontend() {
 }
 
 const cases = {
+  async "account-register-preserves-upload"() {
+    const ui = frontend({ accountsEnabled: true, apiBaseUrl: "https://workspace.example" });
+    const file = await ui.choose("season.zip", 10 * 1024 ** 3);
+    ui.element("#project-name").value = "My season";
+    await ui.element("#connection-button").emit("click");
+    assert.equal(ui.element("#account-dialog").open, true);
+    assert.equal(ui.element("#connect-dialog").open, false);
+    await ui.element("#account-register-tab").emit("click");
+    ui.element("#account-email").value = "person@example.com";
+    ui.element("#account-password").value = "a private long passphrase";
+    ui.element("#account-confirm").value = "a private long passphrase";
+    ui.responses.push({ accounts_enabled: true, max_upload_bytes: 16 * 1024 ** 3 },
+      { session_token: "synthetic-session", user: { id: "a".repeat(32), email: "person@example.com" } }, []);
+    await ui.element("#account-form").emit("submit");
+    assert.equal(ui.app.connected, true);
+    assert.equal(ui.app.file, file);
+    assert.equal(ui.element("#project-name").value, "My season");
+    assert.equal(ui.element("#account-password").value, "");
+    assert.match(ui.element(".upload-meta").textContent, /16 GB/);
+    assert.deepEqual(ui.fetches.map(entry => new URL(entry.url).pathname),
+      ["/api/health", "/api/auth/register", "/api/jobs"]);
+    assert.equal(ui.fetches[1].options.headers.Authorization, undefined);
+    assert.equal(ui.fetches[2].options.headers.Authorization, "Bearer synthetic-session");
+    await ui.element("#connection-button").emit("click");
+    ui.responses.push({ status: "signed_out" });
+    await ui.element("#account-logout").emit("click");
+    assert.equal(ui.app.token, "");
+    assert.equal(ui.app.jobs.length, 0);
+    assert.equal(ui.app.connected, false);
+  },
+  async "account-password-mismatch"() {
+    const ui = frontend({ accountsEnabled: true, apiBaseUrl: "https://workspace.example" });
+    await ui.element("#connection-button").emit("click");
+    await ui.element("#account-register-tab").emit("click");
+    ui.element("#account-password").value = "a private long passphrase";
+    ui.element("#account-confirm").value = "a different private passphrase";
+    await ui.element("#account-form").emit("submit");
+    assert.match(ui.element("#account-error").textContent, /do not match/);
+    assert.equal(ui.fetches.length, 0);
+  },
+  async "account-login-failure"() {
+    const ui = frontend({ accountsEnabled: true, apiBaseUrl: "https://workspace.example" });
+    await ui.element("#connection-button").emit("click");
+    ui.element("#account-email").value = "person@example.com";
+    ui.element("#account-password").value = "a private long passphrase";
+    ui.responses.push({ accounts_enabled: true }, { _status: 401, error: "Email or password is incorrect." });
+    await ui.element("#account-form").emit("submit");
+    assert.equal(ui.app.connected, false);
+    assert.equal(ui.app.token, "");
+    assert.match(ui.element("#account-error").textContent, /Email or password/);
+  },
   async "small-disconnected"() {
     const ui = frontend();
     const file = await ui.choose("archive.zip", 1024 ** 2);

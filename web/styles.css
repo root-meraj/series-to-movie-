@@ -16,3 +16,8 @@ dialog{width:min(530px,calc(100vw - 32px));max-height:calc(100dvh - 40px);border
 .topbar-connect,.preset,.back-link,.journey-summary,.connection-callout button{min-height:48px}.icon-button{width:48px;height:48px}.range-row{grid-template-columns:1fr 1fr 1fr 48px}.range-row .icon-button{width:48px;min-height:49px}
 @media(max-width:650px){.sidebar{grid-template-columns:minmax(0,1fr);padding-top:15px;padding-bottom:13px;gap:12px}.brand strong{font-size:14px}.brand small{font-size:7px;letter-spacing:2px}.brand-mark{width:35px;height:40px}.primary-nav{width:100%;gap:8px}.nav-link{flex:1;justify-content:center;font-size:12px;min-height:48px}.nav-link>span:first-child{font-size:20px}.connection-callout button{min-height:34px}.range-row{grid-template-columns:1fr 1fr 1fr 48px}.range-row .icon-button{width:48px}.topbar-connect{min-height:48px}.preset{min-height:48px}}
 @media(max-width:360px){.brand strong{font-size:13px}.nav-link{font-size:11px}.range-row{grid-template-columns:1fr 1fr}.range-row .icon-button{width:100%}}
+:root { --account-dialog-width: 520px; }
+.account-tabs { display:flex; gap:12px; margin:22px 0; flex-wrap:wrap; }
+.account-tabs [aria-pressed="true"] { border-color:var(--amber); }
+#account-dialog { width:min(var(--account-dialog-width), calc(100vw - 32px)); }
+#account-description { overflow-wrap:anywhere; }

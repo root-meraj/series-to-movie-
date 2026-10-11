@@ -2,6 +2,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
+  const accountMode = window.STS_CONFIG?.accountsEnabled === true;
   const DEFAULT_UPLOAD_LIMIT = 2 * 1024 ** 3;
   const STAGES = [
     ["ingest", "Import episodes", "Put your episodes in order."],
@@ -12,6 +13,7 @@
     ["render", "Render your film", "Prepare the film and its subtitles."],
   ];
   const app = {
+    user: null, authMode: "login",
     api: "", token: "", connected: false, health: null, jobs: [], detail: null,
     route: "", poll: null, pollBusy: false, busy: false, file: null, selectedFile: null,
     fileError: "", notice: null,
@@ -52,7 +54,7 @@
     app.fileError = archiveError(file);
     app.file = app.fileError ? null : file;
     $("#file-name").textContent = file.name;
-    const status = app.fileError ? "Cannot upload this file" : app.connected ? "Ready to upload" : "Connect workspace to upload";
+    const status = app.fileError ? "Cannot upload this file" : app.connected ? "Ready to upload" : accountMode ? "Sign in to upload" : "Connect workspace to upload";
     $("#file-description").textContent = `${sizeLabel(file.size)} · ${status}`;
     $("#archive").setAttribute("aria-invalid", String(Boolean(app.fileError)));
     setInlineError("#create-error", app.fileError);
@@ -61,10 +63,10 @@
     if (!$("#create-form")) return;
     $(".upload-meta").textContent = `ZIP · MP4, MKV, AVI, MOV, WEBM · Up to ${sizeLabel(uploadLimit())}`;
     if (!app.busy) {
-      $("#create-submit").innerHTML = `${app.connected ? "Create my film" : "Connect to create my film"} <span aria-hidden="true">↗</span>`;
+      $("#create-submit").innerHTML = `${app.connected ? "Create my film" : accountMode ? "Sign in to create my film" : "Connect to create my film"} <span aria-hidden="true">↗</span>`;
       $(".create-caption").textContent = app.connected
         ? "You can leave the page after upload. Your progress is saved."
-        : "Connect a processing server before uploading. Your chosen file stays here.";
+        : accountMode ? "Sign in to create your film. Your chosen file stays here." : "Connect a processing server before uploading. Your chosen file stays here.";
     }
     syncSelectedFile();
   }
@@ -107,6 +109,7 @@
     if (element) { element.textContent = message || ""; element.hidden = !message; }
   }
   function responseError(payload, status) {
+    if ((status === 401 || status === 403) && accountMode) return payload?.error || "Your session expired. Sign in again to continue.";
     if (status === 401 || status === 403) return "The workspace access key was not accepted. Open connection settings and try again.";
     if (status === 413) return "This ZIP is larger than the workspace upload limit. Choose a smaller archive.";
     if (status === 404) return "This project is no longer available in the workspace.";
@@ -153,6 +156,7 @@
     return url.href.replace(/\/+$/, "");
   }
   function openConnection() {
+    if (accountMode) { openAccount(); return; }
     if (app.busy) { announce("Wait for the current request to finish before changing your connection."); return; }
     $("#api-url").value = app.api;
     $("#access-key").value = "";
@@ -162,14 +166,15 @@
   }
   function syncConnection() {
     document.body.classList.toggle("connected", app.connected);
-    $("#connection-label").textContent = app.connected ? "Workspace connected" : "Connect workspace";
-    $("#topbar-status").textContent = app.connected ? "Workspace connected" : "Not connected";
+    $("#connection-label").textContent = accountMode ? (app.connected ? "Your account" : "Sign in / Create account") : app.connected ? "Workspace connected" : "Connect workspace";
+    $("#topbar-status").textContent = accountMode ? (app.connected ? "Signed in" : "Sign in") : app.connected ? "Workspace connected" : "Not connected";
     $("#film-count").textContent = app.jobs.length;
     syncCreateConnection();
   }
   function disconnect() {
     clearTimeout(app.poll);
     app.token = "";
+    app.user = null;
     app.connected = false;
     app.jobs = [];
     app.detail = null;
@@ -177,8 +182,9 @@
     clearMedia();
     syncConnection();
     $("#connect-dialog").close();
+    $("#account-dialog").close();
     if (location.hash !== "#new") location.hash = "new"; else renderRoute();
-    announce("Workspace disconnected. Your saved projects stay on the server.");
+    announce(accountMode ? "Signed out. Your films stay saved in your account." : "Workspace disconnected. Your saved projects stay on the server.");
   }
   async function refreshJobs() {
     const jobs = await request("/api/jobs");
@@ -232,7 +238,86 @@
   document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
   $("#connect-dialog").addEventListener("close", () => { $("#access-key").value = ""; });
 
+  function openAccount(mode = "login") {
+    if (app.busy) { announce("Wait for the current request to finish."); return; }
+    app.authMode = mode;
+    const register = mode === "register";
+    $("#account-title").textContent = app.connected ? "Your account." : register ? "Your story starts here." : "Welcome back.";
+    $("#account-description").textContent = app.connected ? `Signed in as ${app.user?.email || "your account"}. Your films are private to your account.` : "Create films and find your saved projects from any device.";
+    $("#account-fields").hidden = app.connected;
+    $("#account-submit").hidden = app.connected;
+    $("#account-logout").hidden = !app.connected;
+    $("#account-confirm-field").hidden = !register;
+    $("#account-confirm").required = register;
+    $("#account-demo-note").hidden = !register;
+    $("#account-password").setAttribute("autocomplete", register ? "new-password" : "current-password");
+    $("#account-login-tab").setAttribute("aria-pressed", String(!register));
+    $("#account-register-tab").setAttribute("aria-pressed", String(register));
+    $("#account-submit").textContent = register ? "Create account" : "Sign in";
+    $("#account-password").value = "";
+    $("#account-confirm").value = "";
+    setInlineError("#account-error", "");
+    if (!$("#account-dialog").open) $("#account-dialog").showModal();
+  }
+  $("#account-login-tab").addEventListener("click", () => openAccount("login"));
+  $("#account-register-tab").addEventListener("click", () => openAccount("register"));
+  $("#account-dialog").addEventListener("close", () => {
+    $("#account-password").value = "";
+    $("#account-confirm").value = "";
+  });
+  $("#account-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (app.busy || app.connected) return;
+    const register = app.authMode === "register";
+    const password = $("#account-password").value;
+    if (register && password !== $("#account-confirm").value) {
+      setInlineError("#account-error", "The passwords do not match."); return;
+    }
+    app.busy = true;
+    $("#account-submit").disabled = true;
+    $("#account-login-tab").disabled = true;
+    $("#account-register-tab").disabled = true;
+    setInlineError("#account-error", "");
+    try {
+      const health = await request("/api/health", { publicRequest: true });
+      if (!health.accounts_enabled) throw new Error("Account sign-in is not available yet. Please try again shortly.");
+      const session = await request(`/api/auth/${register ? "register" : "login"}`, {
+        method: "POST", publicRequest: true,
+        body: { email: $("#account-email").value.trim(), password },
+      });
+      if (!session?.session_token || !session?.user?.id) throw new Error("Sign-in could not complete. Please try again.");
+      app.token = session.session_token;
+      app.user = session.user;
+      app.health = health;
+      app.connected = true;
+      await refreshJobs();
+      $("#account-dialog").close();
+      syncConnection();
+      if (app.route === "new") $(".connection-callout")?.remove();
+      else await renderRoute();
+      announce(register ? "Your account is ready. Bring your first season." : "Welcome back. Your editing room is ready.");
+    } catch (error) {
+      app.token = ""; app.user = null; app.connected = false; app.jobs = [];
+      syncConnection();
+      setInlineError("#account-error", error.message);
+    } finally {
+      app.busy = false;
+      $("#account-submit").disabled = false;
+      $("#account-login-tab").disabled = false;
+      $("#account-register-tab").disabled = false;
+      syncConnection();
+    }
+  });
+  $("#account-logout").addEventListener("click", async () => {
+    if (app.busy) return;
+    try {
+      await request("/api/auth/logout", { method: "POST" });
+      disconnect();
+    } catch (error) { setInlineError("#account-error", error.message); }
+  });
+
   function connectionCallout() {
+    if (accountMode) return `<div class="connection-callout"><span aria-hidden="true">↗</span><p>Your films belong to you. <button type="button" data-action="connect">Sign in or create an account</button> to start editing and keep your projects together.</p></div>`;
     return `<div class="connection-callout"><span aria-hidden="true">↗</span><p>Your editing workspace is not connected yet.<br>This website needs a processing server to turn episodes into films. <button type="button" data-action="connect">Connect workspace</button> using that server’s address and access key.</p></div>`;
   }
   function renderNew() {
@@ -352,7 +437,7 @@
   async function renderFilms(serial) {
     $("#main").innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR EDITING WORKSPACE</span><h1>Your films.</h1><p>Every story has a place here.</p></div><a class="button primary" href="#new">＋ New film</a></div><div id="library-content"></div>`;
     if (!app.connected) {
-      $("#library-content").innerHTML = `<section class="empty-state"><div class="empty-icon" aria-hidden="true">S</div><h2>Your stories live in<br>your workspace.</h2><p>Connect your workspace to find your films, follow an edit, or start your next story.</p><button class="button primary" type="button" data-action="connect">Connect workspace <span aria-hidden="true">↗</span></button></section>`;
+      $("#library-content").innerHTML = `<section class="empty-state"><div class="empty-icon" aria-hidden="true">S</div><h2>Your stories live in<br>your workspace.</h2><p>${accountMode ? "Sign in to find your private films, follow an edit, or start your next story." : "Connect your workspace to find your films, follow an edit, or start your next story."}</p><button class="button primary" type="button" data-action="connect">${accountMode ? "Sign in" : "Connect workspace"} <span aria-hidden="true">↗</span></button></section>`;
       return;
     }
     $("#library-content").innerHTML = '<div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span> Finding your films…</div>';
@@ -372,7 +457,7 @@
     }
   }
   async function renderFilm(jobId, serial) {
-    if (!app.connected) { $("#main").innerHTML = '<a class="back-link" href="#films">← Your films</a><h1>Connect your<br>editing room.</h1>' + connectionCallout(); return; }
+    if (!app.connected) { $("#main").innerHTML = '<a class="back-link" href="#films">← Your films</a><h1>Open your<br>editing room.</h1>' + connectionCallout(); return; }
     $("#main").innerHTML = '<div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span> Opening your film…</div>';
     try {
       const detail = await request(`/api/jobs/${encodeURIComponent(jobId)}`);

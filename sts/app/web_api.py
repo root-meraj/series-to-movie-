@@ -1,8 +1,8 @@
 """Authenticated persistent API for the mobile frontend and its streamed exports.
 
 Run this service on the machine hosting the pipeline, independently of the static
-frontend. One access token authorizes the shared editing workspace; this service
-does not provide separate accounts or tenant isolation.
+frontend. Personal accounts authorize owned projects; the private operator token
+retains access to existing jobs for administration.
 """
 
 from __future__ import annotations
@@ -46,15 +46,18 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from sts.app.accounts import SESSION_SECONDS, AccountStore
 from sts.app.runner import JobRunner
 from sts.config import Settings
 from sts.schemas import (
     JobState,
     SelectionDoc,
+    WebCredentialsDoc,
     WebHealthDoc,
     WebJobDetailDoc,
     WebMediaTicketDoc,
     WebRefineRequestDoc,
+    WebSessionDoc,
     read_json,
 )
 
@@ -107,6 +110,9 @@ class WebSettings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     public_url: str | None = None
+    trusted_proxy_ips: str = "127.0.0.1"
+    accounts_enabled: bool = False
+    max_accounts: int = Field(default=100, ge=1, le=1000)
     max_upload_bytes: int | None = Field(default=None, gt=0, le=16 * 1024**3)
 
     @classmethod
@@ -173,19 +179,82 @@ class _WebAPI:
             if value
         )
         self._mutation_lock = anyio.Lock()
+        self._auth_lock = anyio.Lock()
+        self.accounts = (
+            AccountStore(self.jobs_dir.parent / "accounts/accounts.sqlite3", settings.max_accounts)
+            if settings.accounts_enabled
+            else None
+        )
+
+    def _bearer(self, request: Request) -> str:
+        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        return value if scheme.casefold() == "bearer" else ""
 
     def _authorized(self, request: Request) -> bool:
-        authorization = request.headers.get("authorization", "")
-        scheme, _, value = authorization.partition(" ")
-        return scheme.casefold() == "bearer" and secrets.compare_digest(
-            value.encode(), self.token.encode()
-        )
+        value = self._bearer(request)
+        if secrets.compare_digest(value.encode(), self.token.encode()):
+            request.state.user_id = None  # Private operator credential; never sent to visitors.
+            return True
+        user = self.accounts.resolve(value) if self.accounts and value else None
+        if user:
+            request.state.user_id = user.id
+            return True
+        return False
 
     def _require_auth(self, request: Request) -> None:
         if not self._authorized(request):
+            raise HTTPException(401, "Sign in to continue", {"WWW-Authenticate": "Bearer"})
+        job_id = request.path_params.get("job_id")
+        if job_id and request.state.user_id is not None:
+            if not self.accounts or not self.accounts.owns(job_id, request.state.user_id):
+                raise HTTPException(404, "Project not found")
+
+    async def account_auth(self, request: Request) -> Response:
+        """Register or sign in using bounded inputs and serialized password hashing."""
+        if not self.accounts:
+            raise HTTPException(404, "Accounts are not enabled on this workspace")
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 4096:
+                raise HTTPException(413, "Account details are too large")
+            body.extend(chunk)
+        try:
+            credentials = WebCredentialsDoc.model_validate_json(bytes(body))
+        except ValidationError:
             raise HTTPException(
-                401, "Enter the workspace access token", {"WWW-Authenticate": "Bearer"}
+                422, "Use a valid email and a password of 15 to 128 characters"
+            ) from None
+        source = request.client.host if request.client else "unknown"
+        await anyio.to_thread.run_sync(self.accounts.throttle, source, credentials.email)
+        async with self._auth_lock:
+            operation = (
+                self.accounts.register
+                if request.url.path.endswith("register")
+                else self.accounts.login
             )
+            user = await anyio.to_thread.run_sync(
+                operation, credentials.email, credentials.password
+            )
+            token = await anyio.to_thread.run_sync(self.accounts.issue_session, user.id)
+        return self._json(
+            WebSessionDoc(user=user, session_token=token, expires_in=SESSION_SECONDS).model_dump(
+                mode="json"
+            ),
+            status_code=201 if request.url.path.endswith("register") else 200,
+        )
+
+    async def account_me(self, request: Request) -> Response:
+        """Return the current personal account, without accepting the operator key."""
+        user = self.accounts.resolve(self._bearer(request)) if self.accounts else None
+        if user is None:
+            raise HTTPException(401, "Sign in to continue")
+        return self._json(user.model_dump(mode="json"))
+
+    async def account_logout(self, request: Request) -> Response:
+        """Revoke the browser session and all of its signed download links."""
+        if self.accounts:
+            await anyio.to_thread.run_sync(self.accounts.logout, self._bearer(request))
+        return self._json({"status": "signed_out"})
 
     def _redact(self, value: Any) -> Any:
         if isinstance(value, str):
@@ -253,6 +322,7 @@ class _WebAPI:
         return self._json(
             WebHealthDoc(
                 max_upload_bytes=self._upload_limit,
+                accounts_enabled=self.settings.accounts_enabled,
                 default_target_minutes=min(1440.0, max(0.5, self.pipeline_settings.target_minutes)),
             ).model_dump(mode="json")
         )
@@ -265,6 +335,11 @@ class _WebAPI:
             """Read valid checkpoints off the event loop and skip unavailable entries."""
             states: list[JobState] = []
             for path in self.jobs_dir.glob("*/state.json"):
+                if request.state.user_id is not None and (
+                    not self.accounts
+                    or not self.accounts.owns(path.parent.name, request.state.user_id)
+                ):
+                    continue
                 try:
                     states.append(self._state(path.parent.name))
                 except (HTTPException, ValidationError, OSError):
@@ -387,6 +462,10 @@ class _WebAPI:
                         cfg=self.pipeline_settings,
                     )
                 )
+                if self.accounts and request.state.user_id is not None:
+                    await anyio.to_thread.run_sync(
+                        self.accounts.assign, state.job_id, request.state.user_id
+                    )
                 await anyio.to_thread.run_sync(self.runner.start, state.job_id)
                 return self._json(
                     await anyio.to_thread.run_sync(self._detail, state.job_id), status_code=201
@@ -446,6 +525,10 @@ class _WebAPI:
                         self.runner.refine, job_id, must_keep_ranges=refinements.must_keep_ranges
                     )
                 )
+                if self.accounts and request.state.user_id is not None:
+                    await anyio.to_thread.run_sync(
+                        self.accounts.assign, state.job_id, request.state.user_id
+                    )
                 await anyio.to_thread.run_sync(self.runner.start, state.job_id)
             except RuntimeError:
                 raise HTTPException(
@@ -459,13 +542,16 @@ class _WebAPI:
                 await anyio.to_thread.run_sync(self._detail, state.job_id), status_code=201
             )
 
-    def _ticket(self, job_id: str, filename: str, expires: int) -> str:
+    def _ticket(
+        self, job_id: str, filename: str, expires: int, session_digest: str | None = None
+    ) -> str:
         payload = json.dumps(
             {
                 "job_id": job_id,
                 "filename": filename,
                 "expires": expires,
                 "nonce": secrets.token_urlsafe(16),
+                **({"session_digest": session_digest} if session_digest else {}),
             },
             separators=(",", ":"),
         ).encode()
@@ -484,7 +570,12 @@ class _WebAPI:
             data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
             return (
                 isinstance(data, dict)
-                and set(data) == {"job_id", "filename", "expires", "nonce"}
+                and set(data)
+                in (
+                    {"job_id", "filename", "expires", "nonce"},
+                    {"job_id", "filename", "expires", "nonce", "session_digest"},
+                )
+                and self._ticket_owner_valid(data, job_id)
                 and data["job_id"] == job_id
                 and data["filename"] == filename
                 and type(data["expires"]) is int
@@ -493,6 +584,15 @@ class _WebAPI:
             )
         except (ValueError, UnicodeError):
             return False
+
+    def _ticket_owner_valid(self, data: dict[str, Any], job_id: str) -> bool:
+        digest = data.get("session_digest")
+        if digest is None:
+            return True  # Existing private operator tickets retain their bounded lifetime.
+        if not self.accounts or not isinstance(digest, str):
+            return False
+        user = self.accounts.resolve_digest(digest)
+        return user is not None and self.accounts.owns(job_id, user.id)
 
     def _ready_outputs(self, job_id: str) -> None:
         if self._state(job_id).stages.render.status != "done":
@@ -518,7 +618,18 @@ class _WebAPI:
         expires = int(time.time()) + MEDIA_TICKET_SECONDS
         urls = {
             f"{kind}_url": f"{base}/api/jobs/{job_id}/{route}?"
-            + urlencode({"ticket": self._ticket(job_id, filename, expires)})
+            + urlencode(
+                {
+                    "ticket": self._ticket(
+                        job_id,
+                        filename,
+                        expires,
+                        self.accounts.session_digest(self._bearer(request))
+                        if self.accounts and request.state.user_id is not None
+                        else None,
+                    )
+                }
+            )
             for kind, route, filename in (
                 ("movie", "movie", _MOVIE),
                 ("subtitles", "subtitles", _SUBTITLES),
@@ -532,7 +643,10 @@ class _WebAPI:
         """Serve a confined export with bounded range support for playback and seeking."""
         job_id = request.path_params["job_id"]
         filename = _MOVIE if request.url.path.endswith("/movie") else _SUBTITLES
-        if not self._authorized(request) and not self._valid_ticket(
+        authorized = self._authorized(request)
+        if authorized:
+            self._require_auth(request)
+        if not authorized and not self._valid_ticket(
             request.query_params.get("ticket", ""), job_id, filename
         ):
             raise HTTPException(401, "This film link expired; reconnect to the workspace")
@@ -588,6 +702,10 @@ def create_web_app(
 
     routes = [
         Route("/api/health", api.health, methods=["GET"]),
+        Route("/api/auth/register", api.account_auth, methods=["POST"]),
+        Route("/api/auth/login", api.account_auth, methods=["POST"]),
+        Route("/api/auth/me", api.account_me, methods=["GET"]),
+        Route("/api/auth/logout", api.account_logout, methods=["POST"]),
         Route("/api/jobs", api.jobs, methods=["GET"]),
         Route("/api/jobs", api.create, methods=["POST"]),
         Route("/api/jobs/{job_id}", api.detail, methods=["GET"]),
@@ -637,6 +755,7 @@ def main() -> None:
         port=settings.port,
         access_log=False,
         log_config=None,
+        forwarded_allow_ips=settings.trusted_proxy_ips,
     )
 
 

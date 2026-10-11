@@ -13,6 +13,9 @@ import pytest
     "case",
     [
         "small-disconnected",
+        "account-register-preserves-upload",
+        "account-password-mismatch",
+        "account-login-failure",
         "oversize-replacement",
         "empty-replacement",
         "nonzip-replacement",

@@ -504,8 +504,10 @@ Phase 10 mobile hosting extension requested by the user:
   `STS_WEB_ALLOWED_ORIGINS`, `STS_WEB_JOBS_DIR`, `STS_WEB_HOST`, `STS_WEB_PORT`, and
   optional production HTTPS `STS_WEB_PUBLIC_URL`. The default host is loopback.
   The API refuses startup without its access token and allowed origins.
-- The API provides one shared authorized workspace, not separate user accounts.
-  Except health, requests require `Authorization: Bearer <token>`. The frontend
+- With accounts disabled, the API provides one shared operator workspace. With
+  accounts enabled, personal sessions authorize only owned projects (see the
+  account contracts below). Except health and registration/login, requests
+  require `Authorization: Bearer <token>`. The frontend
   holds that token only in page memory, never in public configuration or storage.
   Pipeline credentials and scoring settings stay in the backend `.env`.
 - Transport JSON models live in `sts/schemas.py`. Existing persisted contracts
@@ -637,6 +639,23 @@ Phase 10 local scoring validation repair (existing JSON keys and limits are unch
   remains Phase 10 maintenance and does not start Phase 11.
 
 6\. MODULE SPECS
+
+Web account contracts (Phase 10 maintenance):
+
+POST /api/auth/register and /api/auth/login request:
+{"email": "user@example.com", "password": "15 to 128 characters"}
+
+Response: {"user": {"id": "32 lowercase hex characters", "email": "user@example.com"},
+"session_token": "opaque random bearer", "expires_in": 86400}.
+GET /api/auth/me returns the user object. POST /api/auth/logout returns
+{"status": "signed_out"}. WebHealthDoc adds "accounts_enabled": boolean.
+All auth responses are no-store. Passwords use salted scrypt hashes; SQLite stores
+only session digests. The private account database and project owner mapping live
+under data/accounts/ on the persistent backend volume, outside public job artifacts.
+Ownership is checked for list/detail/stop/resume/refine/media-ticket and all exports.
+Unclaimed pre-account jobs remain operator-only. New accounts cannot claim them.
+Account session tokens stay in tab memory; the operator key is never embedded in UI.
+Email verification, password recovery and the processing queue are separate work.
 
 6.1 ingest.py
 
