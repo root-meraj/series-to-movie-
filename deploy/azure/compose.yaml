@@ -120,6 +120,7 @@ services:
         condition: service_healthy
     environment:
       STS_BACKEND_DOMAIN: ${STS_BACKEND_DOMAIN:?Set STS_BACKEND_DOMAIN in deploy/azure/.env}
+      STS_PROXY_MAX_REQUEST_BYTES: ${STS_PROXY_MAX_REQUEST_BYTES:-2148532224}
     ports:
       - "80:80"
       - "443:443"

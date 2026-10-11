@@ -20,9 +20,9 @@
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 	}
-	# Two GiB plus one MiB of multipart overhead; the API enforces two GiB per ZIP.
+	# Match the configured API ZIP ceiling with room for multipart overhead.
 	request_body {
-		max_size 2148532224
+		max_size {$STS_PROXY_MAX_REQUEST_BYTES:2148532224}
 	}
 	# No site `log` directive: access logging stays disabled.
 	# Forward paths, authorization, CORS preflights and Range headers unchanged.

@@ -765,3 +765,41 @@ def test_startup_without_credentials_exits_cleanly(
     assert exc.value.code == 2
     assert "Set STS_WEB_ACCESS_TOKEN" in caplog.text
     assert _TOKEN not in caplog.text
+
+def test_configured_upload_limit_is_advertised_and_enforced(
+    settings: web_api.WebSettings, runner: _Runner,
+) -> None:
+    """Use the same operator ceiling for health and actual multipart bytes."""
+    settings.max_upload_bytes = 16
+    with TestClient(web_api.create_web_app(settings, runner)) as test_client:
+        assert test_client.get('/api/health').json()['max_upload_bytes'] == 16
+        response = test_client.post('/api/jobs', headers=_AUTH,
+                                    files={'archive': ('show.zip', _archive())})
+        assert response.status_code == 413
+        assert runner.active is None
+
+
+def test_large_season_limit_accepts_declared_length_above_default(
+    settings: web_api.WebSettings, runner: _Runner,
+) -> None:
+    """A larger deployment ceiling does not reject a valid upload at the old ceiling."""
+    settings.max_upload_bytes = 16 * 1024**3
+    with TestClient(web_api.create_web_app(settings, runner)) as test_client:
+        assert test_client.get('/api/health').json()['max_upload_bytes'] == 16 * 1024**3
+        response = test_client.post('/api/jobs',
+                                    headers={**_AUTH, 'Content-Length': str(10 * 1024**3)},
+                                    files={'archive': ('show.zip', _archive())})
+        assert response.status_code == 201
+
+
+def test_archive_storage_shortage_does_not_start_worker(
+    client: TestClient, runner: _Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject an archive if extraction and rendering would exhaust persistent disk."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(web_api.shutil, 'disk_usage', lambda path: SimpleNamespace(free=1))
+    response = client.post('/api/jobs', headers=_AUTH,
+                           files={'archive': ('show.zip', _archive())})
+    assert response.status_code == 507
+    assert runner.active is None

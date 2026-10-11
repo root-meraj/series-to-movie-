@@ -153,7 +153,12 @@ HTTPS address and redeploy the Vercel frontend. Keep the key private.
 
 Test a small synthetic ZIP first. Verify upload, progress, stop/resume, MP4
 playback with seeking, and MP4/SRT downloads before trying a full season.
-The application accepts ZIPs up to 2 GiB; the proxy permits multipart overhead.
+This Azure configuration accepts ZIPs up to 16 GiB; the proxy permits multipart
+overhead. The API reports its configured limit to the website. Other deployments
+keep the 2 GiB default unless `STS_WEB_MAX_UPLOAD_BYTES` is set (maximum 16 GiB).
+Keep `STS_PROXY_MAX_REQUEST_BYTES` at least one MiB above the API limit. Uploads
+spool to disk, and archives are rejected if their declared extraction size plus
+a durable ZIP copy and 10 GiB of render headroom exceed available storage.
 Keep the phone page open while uploading. There is one edit worker, with no
 public waiting queue: another concurrent edit can be rejected as busy.
 

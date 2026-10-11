@@ -16,6 +16,7 @@ import logging
 import math
 import re
 import secrets
+import shutil
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, BinaryIO
 from urllib.parse import urlencode, urlsplit
-from zipfile import BadZipFile, is_zipfile
+from zipfile import BadZipFile, ZipFile, is_zipfile
 
 import anyio
 from pydantic import Field, SecretStr, ValidationError, field_validator
@@ -106,6 +107,7 @@ class WebSettings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     public_url: str | None = None
+    max_upload_bytes: int | None = Field(default=None, gt=0, le=16 * 1024**3)
 
     @classmethod
     def settings_customise_sources(
@@ -250,7 +252,7 @@ class _WebAPI:
         """Report public readiness and upload/runtime limits without backend credentials."""
         return self._json(
             WebHealthDoc(
-                max_upload_bytes=MAX_UPLOAD_BYTES,
+                max_upload_bytes=self._upload_limit,
                 default_target_minutes=min(1440.0, max(0.5, self.pipeline_settings.target_minutes)),
             ).model_dump(mode="json")
         )
@@ -280,25 +282,43 @@ class _WebAPI:
         result = await anyio.to_thread.run_sync(self._detail, request.path_params["job_id"])
         return self._json(result)
 
+    @property
+    def _upload_limit(self) -> int:
+        return self.settings.max_upload_bytes or MAX_UPLOAD_BYTES
+
+    @property
+    def _upload_limit_message(self) -> str:
+        gib = self._upload_limit / 1024**3
+        return f"Upload exceeds the {gib:g} GB limit"
+
     async def _upload_stream(self, request: Request) -> AsyncIterator[bytes]:
         received = 0
         async for chunk in request.stream():
             received += len(chunk)
-            if received > MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD:
+            if received > self._upload_limit + _MULTIPART_OVERHEAD:
                 # The multipart parser closes its temporary files for this exception.
-                raise MultiPartException("Upload exceeds the 2 GB limit")
+                raise MultiPartException(self._upload_limit_message)
             yield chunk
 
-    @staticmethod
-    def _check_upload(upload: UploadFile) -> None:
+    def _check_upload(self, upload: UploadFile) -> None:
         file: BinaryIO = upload.file
         file.seek(0, 2)
         size = file.tell()
         file.seek(0)
-        if size > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "Upload exceeds the 2 GB limit")
+        if size > self._upload_limit:
+            raise HTTPException(413, self._upload_limit_message)
         if size == 0 or not is_zipfile(file):
             raise HTTPException(400, "Choose a valid ZIP archive")
+        with ZipFile(file) as archive:
+            expanded_bytes = sum(member.file_size for member in archive.infolist())
+        # The upload is already spooled; leave room for its durable copy,
+        # extracted episodes, rendered clips and the final film.
+        required_bytes = size + expanded_bytes + 10 * 1024**3
+        storage_path = next(
+            path for path in (self.jobs_dir, *self.jobs_dir.parents) if path.exists()
+        )
+        if required_bytes > shutil.disk_usage(storage_path).free:
+            raise HTTPException(507, "Not enough server storage for this archive and its film")
         file.seek(0)
 
     async def create(self, request: Request) -> Response:
@@ -309,8 +329,8 @@ class _WebAPI:
             try:
                 if int(length) < 0:
                     raise ValueError
-                if int(length) > MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD:
-                    raise HTTPException(413, "Upload exceeds the 2 GB limit")
+                if int(length) > self._upload_limit + _MULTIPART_OVERHEAD:
+                    raise HTTPException(413, self._upload_limit_message)
             except ValueError:
                 raise HTTPException(400, "Invalid upload length") from None
         async with self._mutation_lock:
@@ -328,7 +348,7 @@ class _WebAPI:
             try:
                 form = await parser.parse()
             except MultiPartException as exc:
-                status = 413 if "2 GB" in str(exc) else 400
+                status = 413 if str(exc) == self._upload_limit_message else 400
                 raise HTTPException(status, str(exc)) from None
             try:
                 fields = form.multi_items()
