@@ -2,6 +2,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
+  const DEFAULT_UPLOAD_LIMIT = 2 * 1024 ** 3;
   const STAGES = [
     ["ingest", "Import episodes", "Put your episodes in order."],
     ["transcribe", "Capture dialogue", "Use subtitles first; recognize dialogue when needed."],
@@ -12,7 +13,8 @@
   ];
   const app = {
     api: "", token: "", connected: false, health: null, jobs: [], detail: null,
-    route: "", poll: null, pollBusy: false, busy: false, file: null, notice: null,
+    route: "", poll: null, pollBusy: false, busy: false, file: null, selectedFile: null,
+    fileError: "", notice: null,
     mediaJob: "", mediaPromise: null, ticketExpires: 0, renderSerial: 0,
   };
   let storedAddress = "";
@@ -30,7 +32,41 @@
     return `${minutes < 10 ? minutes.toFixed(1) : Math.round(minutes)} min`;
   }
   function sizeLabel(bytes) {
+    if (bytes < 1024) return `${bytes} ${bytes === 1 ? "byte" : "bytes"}`;
+    if (bytes < 1024 ** 2) return `${Math.ceil(bytes / 1024)} KB`;
     return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1).replace(/\.0$/, "")} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+  }
+  function uploadLimit() {
+    const limit = Number(app.health?.max_upload_bytes);
+    return Number.isSafeInteger(limit) && limit > 0 ? limit : DEFAULT_UPLOAD_LIMIT;
+  }
+  function archiveError(file) {
+    if (!file.name.toLowerCase().endsWith(".zip")) return "Choose a ZIP archive containing your episode videos.";
+    if (file.size === 0) return "This ZIP is empty. Choose an archive with your episodes inside.";
+    if (file.size > uploadLimit()) return `This ZIP exceeds the ${sizeLabel(uploadLimit())} upload limit. Choose a smaller archive.`;
+    return "";
+  }
+  function syncSelectedFile() {
+    const file = app.selectedFile;
+    if (!file) return;
+    app.fileError = archiveError(file);
+    app.file = app.fileError ? null : file;
+    $("#file-name").textContent = file.name;
+    const status = app.fileError ? "Cannot upload this file" : app.connected ? "Ready to upload" : "Connect workspace to upload";
+    $("#file-description").textContent = `${sizeLabel(file.size)} · ${status}`;
+    $("#archive").setAttribute("aria-invalid", String(Boolean(app.fileError)));
+    setInlineError("#create-error", app.fileError);
+  }
+  function syncCreateConnection() {
+    if (!$("#create-form")) return;
+    $(".upload-meta").textContent = `ZIP · MP4, MKV, AVI, MOV, WEBM · Up to ${sizeLabel(uploadLimit())}`;
+    if (!app.busy) {
+      $("#create-submit").innerHTML = `${app.connected ? "Create my film" : "Connect to create my film"} <span aria-hidden="true">↗</span>`;
+      $(".create-caption").textContent = app.connected
+        ? "You can leave the page after upload. Your progress is saved."
+        : "Connect a processing server before uploading. Your chosen file stays here.";
+    }
+    syncSelectedFile();
   }
   function dateLabel(value) {
     const date = new Date(value);
@@ -129,6 +165,7 @@
     $("#connection-label").textContent = app.connected ? "Workspace connected" : "Connect workspace";
     $("#topbar-status").textContent = app.connected ? "Workspace connected" : "Not connected";
     $("#film-count").textContent = app.jobs.length;
+    syncCreateConnection();
   }
   function disconnect() {
     clearTimeout(app.poll);
@@ -171,9 +208,8 @@
       syncConnection();
       $("#connect-dialog").close();
       clearMedia();
-      if (app.route === "new" && app.file) {
+      if (app.route === "new") {
         $(".connection-callout")?.remove();
-        if (app.file.size > health.max_upload_bytes) setInlineError("#create-error", "This archive exceeds your connected workspace’s upload limit.");
       } else {
         const targetRoute = app.route.startsWith("film/") && app.jobs.some(job => `film/${job.job_id}` === app.route) ? app.route : "films";
         if (location.hash !== `#${targetRoute}`) location.hash = targetRoute; else renderRoute();
@@ -197,10 +233,10 @@
   $("#connect-dialog").addEventListener("close", () => { $("#access-key").value = ""; });
 
   function connectionCallout() {
-    return `<div class="connection-callout"><span aria-hidden="true">↗</span><p>Your editing workspace is not connected yet.<br><button type="button" data-action="connect">Connect workspace</button> to upload episodes and access your films.</p></div>`;
+    return `<div class="connection-callout"><span aria-hidden="true">↗</span><p>Your editing workspace is not connected yet.<br>This website needs a processing server to turn episodes into films. <button type="button" data-action="connect">Connect workspace</button> using that server’s address and access key.</p></div>`;
   }
   function renderNew() {
-    const limit = app.health?.max_upload_bytes || 2147483648;
+    const limit = uploadLimit();
     const target = Number(app.health?.default_target_minutes) || 120;
     $("#main").innerHTML = `
       <section class="intro" aria-labelledby="create-title"><div class="intro-copy"><span class="eyebrow">A SEASON, DISTILLED</span><h1 id="create-title">All the story.<br><em>Your kind of film.</em></h1><p>Turn your episodes into one considered cut.<br>The key moments, the connections, the ending.</p></div><div class="story-art" aria-hidden="true"><div class="art-front"><small>THE EDITING ROOM · 01</small><strong>A season.<br>One story.<br>Your cut.</strong><span><i></i>SEASON TO SCREEN</span></div></div></section>
@@ -209,6 +245,8 @@
       <section class="panel"><div class="panel-heading"><h3>Make it your cut</h3><small>YOUR EDIT</small></div><p class="panel-description">Choose how much time you have for the story.</p><label for="target-minutes">Target film length</label><div class="runtime-row"><input id="target-minutes" name="target_minutes" type="number" min="1" step="0.5" value="${target}" inputmode="decimal" required><span>minutes</span></div><div class="runtime-presets" aria-label="Suggested film lengths"><button class="preset" type="button" data-minutes="60">60 min</button><button class="preset" type="button" data-minutes="90">90 min</button><button class="preset ${target === 120 ? "selected" : ""}" type="button" data-minutes="120">120 min</button></div><p class="field-help">The finished length depends on available story footage.</p><ul class="included"><li><span aria-hidden="true">✓</span> Subtitles first, for faster story analysis</li><li><span aria-hidden="true">✓</span> Keep context, key moments, and the ending</li><li><span aria-hidden="true">✓</span> Remove detected episode credits</li><li><span aria-hidden="true">✓</span> Download your film and subtitles</li></ul><p id="create-error" class="inline-error" role="alert" hidden></p><div id="upload-progress" class="upload-progress" role="status" aria-live="polite" hidden><div class="progress-caption"><span id="upload-label">Uploading your episodes</span><span id="upload-percent">0%</span></div><div class="progress-track" role="progressbar" aria-label="ZIP upload" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="upload-bar" style="width:0%"></span></div></div><button id="create-submit" class="button primary full-width" type="submit">Create my film <span aria-hidden="true">↗</span></button><p class="create-caption">You can leave the page after upload. Your progress is saved.</p></section></div></form>
       ${!app.connected ? connectionCallout() : '<p class="field-help" style="margin-top:22px">Your workspace handles processing and story scoring. You can follow the edit from any device connected to it.</p>'}`;
     app.file = null;
+    app.selectedFile = null;
+    app.fileError = "";
     $("#archive").addEventListener("change", event => chooseFile(event.target.files?.[0]));
     const zone = $("#upload-zone");
     for (const name of ["dragenter", "dragover"]) zone.addEventListener(name, event => { event.preventDefault(); zone.classList.add("dragging"); });
@@ -217,6 +255,7 @@
     $("#create-form").addEventListener("submit", createFilm);
     $("#target-minutes").addEventListener("input", syncRuntimePresets);
     syncRuntimePresets();
+    syncCreateConnection();
   }
   function syncRuntimePresets() {
     document.querySelectorAll("[data-minutes]").forEach(button => {
@@ -227,14 +266,9 @@
   }
   function chooseFile(file) {
     if (!file) return;
-    app.file = null;
-    setInlineError("#create-error", "");
-    if (!file.name.toLowerCase().endsWith(".zip")) return setInlineError("#create-error", "Choose a ZIP archive containing your episode videos.");
-    if (file.size === 0) return setInlineError("#create-error", "This ZIP is empty. Choose an archive with your episodes inside.");
-    if (file.size > (app.health?.max_upload_bytes || 2147483648)) return setInlineError("#create-error", `Choose a ZIP under ${sizeLabel(app.health?.max_upload_bytes || 2147483648)}.`);
-    app.file = file;
-    $("#file-name").textContent = file.name;
-    $("#file-description").textContent = `${sizeLabel(file.size)} · Ready to upload`;
+    app.selectedFile = file;
+    syncSelectedFile();
+    if (!app.file) return;
     if (!$("#project-name").value.trim()) $("#project-name").value = file.name.replace(/\.zip$/i, "").replace(/[_.]/g, " ").slice(0, 160);
   }
   function uploadArchive(form) {
@@ -266,9 +300,10 @@
   async function createFilm(event) {
     event.preventDefault();
     if (app.busy) return;
+    if (app.fileError) { setInlineError("#create-error", app.fileError); $("#archive").focus(); return; }
     if (!app.connected) { openConnection(); return; }
     if (!app.file) { setInlineError("#create-error", "Choose your episode ZIP first."); $("#archive").focus(); return; }
-    if (app.file.size > (app.health?.max_upload_bytes || 2147483648)) { setInlineError("#create-error", "This archive exceeds your workspace’s upload limit."); return; }
+    if (archiveError(app.file)) { syncSelectedFile(); return; }
     const minutes = Number($("#target-minutes").value);
     if (!Number.isFinite(minutes) || minutes <= 0) { setInlineError("#create-error", "Choose a film length greater than zero."); return; }
     const form = new FormData();
@@ -288,6 +323,8 @@
       app.detail = detail;
       updateJobList(detail.state);
       app.file = null;
+      app.selectedFile = null;
+      app.fileError = "";
       location.hash = `film/${encodeURIComponent(detail.state.job_id)}`;
       announce("Your episodes are in. The editing room is at work.");
     } catch (error) {
