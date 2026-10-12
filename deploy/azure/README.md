@@ -149,7 +149,7 @@ Set `STS_WEB_ACCOUNTS_ENABLED=true` in the server's private `.env`. Set
 settings; the operator key must never appear in this file.
 
 Open the Vercel site, choose **Create account**, and enter an email and a password
-of 15 to 128 characters. Visitors do not need a server address or workspace key.
+of 8 to 128 characters. Visitors do not need a server address or workspace key.
 Sessions expire after 24 hours and remain only in tab memory; after reloading,
 sign in again. Logout revokes that session and its film links. This demo does
 not verify email ownership or provide password recovery. The default account

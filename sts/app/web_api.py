@@ -222,7 +222,7 @@ class _WebAPI:
             credentials = WebCredentialsDoc.model_validate_json(bytes(body))
         except ValidationError:
             raise HTTPException(
-                422, "Use a valid email and a password of 15 to 128 characters"
+                422, "Use a valid email and a password of 8 to 128 characters"
             ) from None
         source = request.client.host if request.client else "unknown"
         await anyio.to_thread.run_sync(self.accounts.throttle, source, credentials.email)

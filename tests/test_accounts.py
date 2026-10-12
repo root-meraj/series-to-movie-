@@ -14,7 +14,7 @@ from test_web_api import _AUTH, _ORIGIN, _TOKEN, _archive, _Runner, _state
 from sts.app.accounts import AccountStore
 from sts.app.web_api import WebSettings, create_web_app
 
-_PASSWORD = "a long private test passphrase"
+_PASSWORD = "test123!"
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ def test_refined_project_inherits_owner_and_account_cap(
     "body",
     [
         {"email": "invalid", "password": _PASSWORD},
-        {"email": "first@example.com", "password": "short"},
+        {"email": "first@example.com", "password": "short12"},
         {"email": "first@example.com", "password": _PASSWORD, "role": "admin"},
     ],
 )

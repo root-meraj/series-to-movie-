@@ -643,7 +643,7 @@ Phase 10 local scoring validation repair (existing JSON keys and limits are unch
 Web account contracts (Phase 10 maintenance):
 
 POST /api/auth/register and /api/auth/login request:
-{"email": "user@example.com", "password": "15 to 128 characters"}
+{"email": "user@example.com", "password": "8 to 128 characters"}
 
 Response: {"user": {"id": "32 lowercase hex characters", "email": "user@example.com"},
 "session_token": "opaque random bearer", "expires_in": 86400}.
